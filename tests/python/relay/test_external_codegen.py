@@ -20,6 +20,7 @@ import sys
 import numpy as np
 
 import tvm
+from tvm import te
 import tvm.relay.testing
 import tvm.relay.transform
 from tvm import relay
@@ -38,7 +39,7 @@ def check_result(mod, map_inputs, out_shape, result, tol=1e-5, target="llvm",
         contrib_path = os.path.join(source_dir, "src", "runtime", "contrib")
 
         kwargs = {}
-        kwargs["options"] = ["-O2", "-std=c++11", "-I" + contrib_path]
+        kwargs["options"] = ["-O2", "-std=c++14", "-I" + contrib_path]
         tmp_path = util.tempdir()
         lib_name = 'lib.so'
         lib_path = tmp_path.relpath(lib_name)
@@ -48,7 +49,8 @@ def check_result(mod, map_inputs, out_shape, result, tol=1e-5, target="llvm",
         return lib
 
     def check_vm_result():
-        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+        with tvm.transform.PassContext(opt_level=3,
+                                       disabled_pass=["AlterOpLayout"]):
             exe = relay.vm.compile(mod, target=target)
         code, lib = exe.save()
         lib = update_lib(lib)
@@ -59,7 +61,8 @@ def check_result(mod, map_inputs, out_shape, result, tol=1e-5, target="llvm",
         tvm.testing.assert_allclose(out.asnumpy(), result, rtol=tol, atol=tol)
 
     def check_graph_runtime_result():
-        with relay.build_config(opt_level=3, disabled_pass=["AlterOpLayout"]):
+        with tvm.transform.PassContext(opt_level=3,
+                                       disabled_pass=["AlterOpLayout"]):
             json, lib, _ = relay.build(mod, target=target)
         lib = update_lib(lib)
         rt_mod = tvm.contrib.graph_runtime.create(json, lib, ctx)
@@ -77,9 +80,9 @@ def check_result(mod, map_inputs, out_shape, result, tol=1e-5, target="llvm",
 
 
 def set_external_func_attr(func, compiler, ext_symbol):
-    func = func.set_attribute("Primitive", tvm.tir.IntImm("int32", 1))
-    func = func.set_attribute("Compiler", tvm.tir.StringImm(compiler))
-    func = func.set_attribute("ExternalSymbol", tvm.tir.StringImm(ext_symbol))
+    func = func.with_attr("Primitive", tvm.tir.IntImm("int32", 1))
+    func = func.with_attr("Compiler", compiler)
+    func = func.with_attr("global_symbol", ext_symbol)
     return func
 
 
@@ -157,6 +160,23 @@ def test_extern_gcc_single_op():
     mod = tvm.IRModule.from_expr(call)
     x_data = np.random.rand(8, 8).astype('float32')
     y_data = np.random.rand(8, 8).astype('float32')
+
+    check_result(mod, {"x": x_data, "y": y_data}, (8, 8), x_data + y_data)
+
+
+def test_extern_gcc_single_op_int():
+    x = relay.var('x', shape=(8, 8), dtype="int32")
+    y = relay.var('y', shape=(8, 8), dtype="int32")
+
+    x0 = relay.var('x0', shape=(8, 8), dtype="int32")
+    y0 = relay.var('y0', shape=(8, 8), dtype="int32")
+    z = x0 + y0
+    f = relay.Function([x0, y0], z)
+    f = set_external_func_attr(f, "ccompiler", "ccompiler_0")
+    call = relay.Call(f, [x, y])
+    mod = tvm.IRModule.from_expr(call)
+    x_data = np.random.rand(8, 8).astype('int32')
+    y_data = np.random.rand(8, 8).astype('int32')
 
     check_result(mod, {"x": x_data, "y": y_data}, (8, 8), x_data + y_data)
 
@@ -242,5 +262,6 @@ def test_extern_dnnl():
 if __name__ == "__main__":
     test_multi_node_subgraph()
     test_extern_gcc_single_op()
+    test_extern_gcc_single_op_int()
     test_extern_gcc()
     test_extern_dnnl()

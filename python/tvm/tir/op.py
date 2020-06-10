@@ -30,9 +30,9 @@ def _pack_buffer(buf):
     """
     assert buf.shape
     shape = Call("handle", "tvm_stack_make_shape", buf.shape,
-                 Call.Intrinsic, None, 0)
+                 Call.Intrinsic)
     strides = Call("handle", "tvm_stack_make_shape", buf.strides,
-                   Call.Intrinsic, None, 0) if buf.strides else 0
+                   Call.Intrinsic) if buf.strides else 0
     pack_args = [buf.data,
                  shape,
                  strides,
@@ -40,7 +40,7 @@ def _pack_buffer(buf):
                  const(0, dtype=buf.dtype),
                  buf.elem_offset]
     return Call("handle", "tvm_stack_make_array",
-                pack_args, Call.Intrinsic, None, 0)
+                pack_args, Call.Intrinsic)
 
 def call_packed(*args):
     """Build expression by call an external packed function.
@@ -64,11 +64,11 @@ def call_packed(*args):
 
     See Also
     --------
-    tvm.extern : Create tensor with extern function call.
+    te.extern : Create tensor with extern function call.
     """
     call_args = [_pack_buffer(x) if isinstance(x, Buffer) else x for x in args]
     return Call(
-        "int32", "tvm_call_packed", call_args, Call.Intrinsic, None, 0)
+        "int32", "tvm_call_packed", call_args, Call.Intrinsic)
 
 
 def call_pure_intrin(dtype, func_name, *args):
@@ -95,7 +95,7 @@ def call_pure_intrin(dtype, func_name, *args):
     """
     args = convert(args)
     return Call(
-        dtype, func_name, convert(args), Call.PureIntrinsic, None, 0)
+        dtype, func_name, convert(args), Call.PureIntrinsic)
 
 
 def call_intrin(dtype, func_name, *args):
@@ -122,7 +122,7 @@ def call_intrin(dtype, func_name, *args):
     """
     args = convert(args)
     return Call(
-        dtype, func_name, convert(args), Call.Intrinsic, None, 0)
+        dtype, func_name, convert(args), Call.Intrinsic)
 
 
 def call_pure_extern(dtype, func_name, *args):
@@ -145,7 +145,7 @@ def call_pure_extern(dtype, func_name, *args):
         The call expression.
     """
     return Call(
-        dtype, func_name, convert(args), Call.PureExtern, None, 0)
+        dtype, func_name, convert(args), Call.PureExtern)
 
 
 def call_extern(dtype, func_name, *args):
@@ -168,7 +168,7 @@ def call_extern(dtype, func_name, *args):
         The call expression.
     """
     return Call(
-        dtype, func_name, convert(args), Call.Extern, None, 0)
+        dtype, func_name, convert(args), Call.Extern)
 
 
 def call_llvm_intrin(dtype, name, *args):
@@ -194,7 +194,7 @@ def call_llvm_intrin(dtype, name, *args):
     from tvm.target import codegen
     llvm_id = codegen.llvm_lookup_intrinsic_id(name)
     assert llvm_id != 0, "%s is not an LLVM intrinsic" % name
-    return call_pure_intrin(dtype, 'llvm_intrin', tvm.const(llvm_id, 'uint32'), *args)
+    return call_pure_intrin(dtype, 'llvm_intrin', tvm.tir.const(llvm_id, 'uint32'), *args)
 
 
 def any(*args):
@@ -274,11 +274,11 @@ def trace(args, trace_action="tvm.default_trace_action"):
     tvm.tir.call_packed : Creates packed function.
     """
     if not isinstance(args, list):
-        raise Exception("tvm.trace consumes the args as list type")
+        raise Exception("tvm.tir.trace consumes the args as list type")
     call_args = [_pack_buffer(x) if isinstance(x, Buffer) else x for x in args]
     call_args.insert(0, trace_action)
     return tvm.tir.Call(
-        args[-1].dtype, "tvm_call_trace_packed", call_args, tvm.tir.Call.Intrinsic, None, 0)
+        args[-1].dtype, "tvm_call_trace_packed", call_args, tvm.tir.Call.Intrinsic)
 
 
 
@@ -328,6 +328,38 @@ def exp(x):
         The result.
     """
     return call_pure_intrin(x.dtype, "exp", x)
+
+
+def exp2(x):
+    """Calculate 2**x
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "exp2", x)
+
+
+def exp10(x):
+    """Calculate 10**x
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "exp10", x)
 
 
 def erf(x):
@@ -393,6 +425,71 @@ def log(x):
     """
     return call_pure_intrin(x.dtype, "log", x)
 
+
+def log2(x):
+    """Take log2 of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "log2", x)
+
+
+def log10(x):
+    """Take log10 of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "log10", x)
+
+
+def log1p(x):
+    """Take log(x + 1) with respect to input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "log1p", x)
+
+
+def tan(x):
+    """Take tan of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "tan", x)
+
+
 def cos(x):
     """Take cos of input x.
 
@@ -407,6 +504,55 @@ def cos(x):
         The result.
     """
     return call_pure_intrin(x.dtype, "cos", x)
+
+
+def cosh(x):
+    """Take cosh of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "cosh", x)
+
+
+def acos(x):
+    """Take acos of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "acos", x)
+
+
+def acosh(x):
+    """Take acos of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "acosh", x)
+
 
 def sin(x):
     """Take sin of input x.
@@ -423,6 +569,55 @@ def sin(x):
     """
     return call_pure_intrin(x.dtype, "sin", x)
 
+
+def sinh(x):
+    """Take sinh of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "sinh", x)
+
+
+def asin(x):
+    """Take asin of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "asin", x)
+
+
+def asinh(x):
+    """Take asinh of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "asinh", x)
+
+
 def atan(x):
     """Take atan of input x.
 
@@ -437,6 +632,42 @@ def atan(x):
         The result.
     """
     return call_pure_intrin(x.dtype, "atan", x)
+
+
+def atanh(x):
+    """Take atanh of input x.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x.dtype, "atanh", x)
+
+
+def atan2(x1, x2):
+    """Take arctan2(x1, x2).
+
+    Parameters
+    ----------
+    x1 : PrimExpr
+        Input argument.
+
+    x2 : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x1.dtype, "atan2", x1, x2)
+
 
 def sqrt(x):
     """Take square root of input x.
@@ -556,9 +787,9 @@ def round(x):
 def nearbyint(x):
     """Round elements of the array to the nearest integer.
     This intrinsic uses llvm.nearbyint instead of llvm.round
-    which is faster but will results different from tvm.round.
+    which is faster but will results different from te.round.
     Notably nearbyint rounds according to the rounding mode,
-    whereas tvm.round (llvm.round) ignores that.
+    whereas te.round (llvm.round) ignores that.
     For differences between the two see:
     https://en.cppreference.com/w/cpp/numeric/math/round
     https://en.cppreference.com/w/cpp/numeric/math/nearbyint
@@ -576,6 +807,82 @@ def nearbyint(x):
     return _ffi_api.nearbyint(x)
 
 
+def nextafter(x1, x2):
+    """Return the next floating-point value after x1 towards x2.
+
+    Parameters
+    ----------
+    x1 : PrimExpr
+        Input argument.
+
+    x2 : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x1.dtype, "nextafter", x1, x2)
+
+
+def hypot(x1, x2):
+    """Equivalent to sqrt(x1**2 + x2**2), element-wise.
+
+    Parameters
+    ----------
+    x1 : PrimExpr
+        Input argument.
+
+    x2 : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x1.dtype, "hypot", x1, x2)
+
+
+def copysign(x1, x2):
+    """Change the sign of x1 to that of x2, element-wise.
+
+    Parameters
+    ----------
+    x1 : PrimExpr
+        Input argument.
+
+    x2 : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x1.dtype, "copysign", x1, x2)
+
+
+def ldexp(x1, x2):
+    """Returns x1 * (2 ** x2).
+
+    Parameters
+    ----------
+    x1 : PrimExpr
+        Input argument.
+
+    x2 : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return call_pure_intrin(x1.dtype, "ldexp", x1, x2)
+
+
 def isnan(x):
     """Check if input value is Nan.
 
@@ -590,6 +897,38 @@ def isnan(x):
         The result.
     """
     return _ffi_api.isnan(x)
+
+
+def isfinite(x):
+    """Check if input value is finite.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return _ffi_api.isfinite(x)
+
+
+def isinf(x):
+    """Check if input value is infinite.
+
+    Parameters
+    ----------
+    x : PrimExpr
+        Input argument.
+
+    Returns
+    -------
+    y : PrimExpr
+        The result.
+    """
+    return _ffi_api.isinf(x)
 
 
 def power(x, y):
@@ -855,13 +1194,13 @@ def comm_reducer(fcombine, fidentity, name="reduce"):
     -------
     .. code-block:: python
 
-        n = tvm.var("n")
-        m = tvm.var("m")
-        mysum = tvm.comm_reducer(lambda x, y: x+y,
-            lambda t: tvm.const(0, dtype=t), name="mysum")
-        A = tvm.placeholder((n, m), name="A")
-        k = tvm.reduce_axis((0, m), name="k")
-        B = tvm.compute((n,), lambda i: mysum(A[i, k], axis=k), name="B")
+        n = te.var("n")
+        m = te.var("m")
+        mysum = te.comm_reducer(lambda x, y: x+y,
+            lambda t: tvm.tir.const(0, dtype=t), name="mysum")
+        A = te.placeholder((n, m), name="A")
+        k = te.reduce_axis((0, m), name="k")
+        B = te.compute((n,), lambda i: mysum(A[i, k], axis=k), name="B")
     """
     def _reduce_directly(*args):
         num = len(args)
@@ -943,14 +1282,15 @@ def comm_reducer(fcombine, fidentity, name="reduce"):
               -------
               .. code-block:: python
 
-                m = tvm.var("m")
-                n = tvm.var("n")
-                A = tvm.placeholder((m, n), name="A")
-                k = tvm.reduce_axis((0, n), name="k")
+                m = te.var("m")
+                n = te.var("n")
+                A = te.placeholder((m, n), name="A")
+                k = te.reduce_axis((0, n), name="k")
 
                 # there are two way to use this {0} reducer:
                 # mode 1, accept (expr, axis, where) to produce an Reduce Expr
-                B = tvm.compute((m,), lambda i: tvm.{0}(A[i, k], axis=k), name="B")
+                # tvm.{0} represents tvm.te.{0} or tvm.tir.{0}.
+                B = te.compute((m,), lambda i: tvm.{0}(A[i, k], axis=k), name="B")
 
                 # mode 2, simply use it with multiple Exprs:
                 {0}_res = tvm.{0}(m, n)

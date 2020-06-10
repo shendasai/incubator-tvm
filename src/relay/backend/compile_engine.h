@@ -25,13 +25,16 @@
 #ifndef TVM_RELAY_BACKEND_COMPILE_ENGINE_H_
 #define TVM_RELAY_BACKEND_COMPILE_ENGINE_H_
 
-#include <tvm/tir/lowered_func.h>
-#include <tvm/runtime/module.h>
+#include <tvm/node/structural_equal.h>
+#include <tvm/node/structural_hash.h>
 #include <tvm/relay/analysis.h>
 #include <tvm/relay/expr.h>
+#include <tvm/relay/op_strategy.h>
 #include <tvm/relay/transform.h>
-#include <string>
+#include <tvm/runtime/module.h>
+
 #include <functional>
+#include <string>
 
 namespace tvm {
 namespace relay {
@@ -44,6 +47,28 @@ enum ShapeFuncParamState {
   kNeedBoth = 3,
 };
 
+struct LoweredOutputNode : public Object {
+  /*! \brief The outputs to the function */
+  tvm::Array<te::Tensor> outputs;
+  /*! \brief The implementation used to compute the output */
+  OpImplementation implementation;
+
+  void VisitAttrs(tvm::AttrVisitor* v) {
+    v->Visit("outputs", &outputs);
+    v->Visit("implementation", &implementation);
+  }
+
+  static constexpr const char* _type_key = "relay.LoweredOutput";
+  TVM_DECLARE_FINAL_OBJECT_INFO(LoweredOutputNode, Object);
+};
+
+class LoweredOutput : public ObjectRef {
+ public:
+  TVM_DLL LoweredOutput(tvm::Array<te::Tensor> outputs, OpImplementation impl);
+
+  TVM_DEFINE_OBJECT_REF_METHODS(LoweredOutput, ObjectRef, LoweredOutputNode);
+};
+
 /*! \brief Node container to represent a cached function. */
 struct CachedFuncNode : public Object {
   /* \brief compiled target */
@@ -54,8 +79,11 @@ struct CachedFuncNode : public Object {
   tvm::Array<te::Tensor> inputs;
   /* \brief The outputs to the function */
   tvm::Array<te::Tensor> outputs;
+  /*! \brief The schedule to the function */
+  te::Schedule schedule;
   /*! \brief The lowered functions to support the function. */
-  tvm::Array<tir::LoweredFunc> funcs;
+  IRModule funcs = IRModule();
+
   /*! \brief Parameter usage states in the shape function. */
   tvm::Array<Integer> shape_func_param_states;
 
@@ -64,6 +92,7 @@ struct CachedFuncNode : public Object {
     v->Visit("func_name", &func_name);
     v->Visit("inputs", &inputs);
     v->Visit("outputs", &outputs);
+    v->Visit("schedule", &schedule);
     v->Visit("funcs", &funcs);
     v->Visit("shape_func_param_states", &shape_func_param_states);
   }
@@ -98,14 +127,6 @@ class CCacheKeyNode : public Object {
    * \return The result of equality check.
    */
   inline bool Equal(const CCacheKeyNode* other) const;
-  /*!
-   * \brief create a cache key.
-   * \param source_func The source function.
-   * \param target The target device.
-   * \return the created key.
-   */
-  TVM_DLL static CCacheKey make(Function source_func,
-                                Target target);
 
   static constexpr const char* _type_key = "relay.CCacheKey";
   TVM_DECLARE_FINAL_OBJECT_INFO(CCacheKeyNode, tvm::Object);
@@ -122,9 +143,15 @@ class CCacheKey : public ObjectRef {
  public:
   CCacheKey() {}
   explicit CCacheKey(ObjectPtr<Object> n) : ObjectRef(n) {}
-  const CCacheKeyNode* operator->() const {
-    return static_cast<const CCacheKeyNode*>(get());
-  }
+
+  /*!
+   * \brief The constructor
+   * \param source_func The source function.
+   * \param target The target device.
+   */
+  TVM_DLL CCacheKey(Function source_func, Target target);
+
+  const CCacheKeyNode* operator->() const { return static_cast<const CCacheKeyNode*>(get()); }
   // comparator
   inline bool operator==(const CCacheKey& other) const {
     CHECK(defined() && other.defined());
@@ -156,12 +183,8 @@ class CCacheValue : public ObjectRef {
  public:
   CCacheValue() {}
   explicit CCacheValue(ObjectPtr<Object> n) : ObjectRef(n) {}
-  CCacheValueNode* operator->() {
-    return static_cast<CCacheValueNode*>(get_mutable());
-  }
-  const CCacheValueNode* operator->() const {
-    return static_cast<const CCacheValueNode*>(get());
-  }
+  CCacheValueNode* operator->() { return static_cast<CCacheValueNode*>(get_mutable()); }
+  const CCacheValueNode* operator->() const { return static_cast<const CCacheValueNode*>(get()); }
   using ContainerType = CCacheValueNode;
 };
 
@@ -212,9 +235,7 @@ class CompileEngine : public ObjectRef {
  public:
   CompileEngine() {}
   explicit CompileEngine(ObjectPtr<Object> n) : ObjectRef(n) {}
-  CompileEngineNode* operator->() {
-    return static_cast<CompileEngineNode*>(get_mutable());
-  }
+  CompileEngineNode* operator->() { return static_cast<CompileEngineNode*>(get_mutable()); }
   using ContainerType = CompileEngineNode;
   /*! \brief The global compile engine. */
   TVM_DLL static const CompileEngine& Global();
@@ -231,18 +252,16 @@ bool IsDynamic(const Type& ty);
 inline size_t CCacheKeyNode::Hash() const {
   if (hash_ != 0) return hash_;
   // do structral hash, avoid 0.
-  hash_ = StructuralHash()(this->source_func);
-  hash_ = dmlc::HashCombine(
-      hash_, std::hash<std::string>()(target->str()));
+  hash_ = tvm::StructuralHash()(this->source_func);
+  hash_ = dmlc::HashCombine(hash_, std::hash<std::string>()(target->str()));
   if (hash_ == 0) hash_ = 1;
   return hash_;
 }
 
-inline bool CCacheKeyNode::Equal(
-    const CCacheKeyNode* other) const {
+inline bool CCacheKeyNode::Equal(const CCacheKeyNode* other) const {
   if (Hash() != other->Hash()) return false;
   return this->target->str() == other->target->str() &&
-      AlphaEqual(this->source_func, other->source_func);
+         tvm::StructuralEqual()(this->source_func, other->source_func);
 }
 
 }  // namespace relay
@@ -250,7 +269,7 @@ inline bool CCacheKeyNode::Equal(
 
 namespace std {
 // overload hash
-template<>
+template <>
 struct hash<::tvm::relay::CCacheKey> {
   size_t operator()(const ::tvm::relay::CCacheKey& key) const {
     CHECK(key.defined());

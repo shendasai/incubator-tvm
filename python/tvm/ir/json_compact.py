@@ -16,6 +16,9 @@
 # under the License.
 """Tool to upgrade json from historical versions."""
 import json
+import tvm.ir
+import tvm.runtime
+
 
 def create_updater(node_map, from_ver, to_ver):
     """Create an updater to update json loaded data.
@@ -41,8 +44,12 @@ def create_updater(node_map, from_ver, to_ver):
         nodes = data["nodes"]
         for idx, item in enumerate(nodes):
             f = node_map.get(item["type_key"], None)
-            if f:
-                nodes[idx] = f(item, nodes)
+            if isinstance(f, list):
+                for fpass in f:
+                    item = fpass(item, nodes)
+            elif f:
+                item = f(item, nodes)
+            nodes[idx] = item
         data["attrs"]["tvm_version"] = to_ver
         return data
     return _updater
@@ -62,11 +69,74 @@ def create_updater_06_to_07():
         # set vindex to null
         nodes[vindex]["type_key"] = ""
         del item["attrs"]["var"]
+        assert item["type_key"].startswith("relay.")
+        item["type_key"] = item["type_key"][len("relay."):]
         return item
 
+    def _rename(new_name):
+        def _convert(item, _):
+            item["type_key"] = new_name
+            return item
+        return _convert
+
+    def _update_tir_var(new_name):
+        def _convert(item, _):
+            item["type_key"] = new_name
+            item["attrs"]["type_annotation"] = "0"
+            return item
+        return _convert
+
+    def _update_global_key(item, _):
+        if "global_key" in item:
+            item["repr_str"] = item["global_key"]
+            del item["global_key"]
+        return item
+
+    def _update_from_std_str(key):
+        def _convert(item, nodes):
+            str_val = item["attrs"][key]
+            jdata = json.loads(tvm.ir.save_json(tvm.runtime.String(str_val)))
+            root_idx = jdata["root"]
+            val = jdata["nodes"][root_idx]
+            sidx = len(nodes)
+            nodes.append(val)
+            item["attrs"][key] = '%d' % sidx
+            return item
+
+        return _convert
+
+
     node_map = {
-        "relay.TypeVar": _ftype_var,
-        "relay.GlobalTypeVar": _ftype_var,
+        # Base IR
+        "SourceName": _update_global_key,
+        "EnvFunc": _update_global_key,
+        "relay.Op": [_update_global_key, _rename("Op")],
+        "relay.TypeVar": [_ftype_var, _update_from_std_str("name_hint")],
+        "TypeVar": _update_from_std_str("name_hint"),
+        "relay.Id": [_update_from_std_str("name_hint")],
+        "relay.GlobalTypeVar": [_ftype_var, _update_from_std_str("name_hint")],
+        "GlobalTypeVar": _update_from_std_str("name_hint"),
+        "relay.Type": _rename("Type"),
+        "relay.TupleType": _rename("TupleType"),
+        "relay.TypeConstraint": _rename("TypeConstraint"),
+        "relay.FuncType": _rename("FuncType"),
+        "relay.IncompleteType": _rename("IncompleteType"),
+        "relay.TypeRelation": _rename("TypeRelation"),
+        "relay.TypeCall": _rename("TypeCall"),
+        "relay.Module": _rename("IRModule"),
+        "relay.SourceName": _rename("SourceName"),
+        "relay.Span": _rename("Span"),
+        "relay.GlobalVar": [_rename("GlobalVar"), _update_from_std_str("name_hint")],
+        "GlobalVar": _update_from_std_str("name_hint"),
+        "relay.Pass": _rename("transform.Pass"),
+        "relay.PassInfo": _rename("transform.PassInfo"),
+        "relay.PassContext": _rename("transform.PassContext"),
+        "relay.ModulePass": _rename("transform.ModulePass"),
+        "relay.Sequential": _rename("transform.Sequential"),
+        "StrMap": _rename("Map"),
+        # TIR
+        "Variable": [_update_tir_var("tir.Var"), _update_from_std_str("name")],
+        "SizeVar": [_update_tir_var("tir.SizeVar"), _update_from_std_str("name")],
     }
     return create_updater(node_map, "0.6", "0.7")
 

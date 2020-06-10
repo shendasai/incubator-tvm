@@ -14,25 +14,22 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Expression AST Node in TVM.
+# pylint: disable=redefined-builtin
+"""TIR expression nodes.
 
-User do not need to deal with expression AST node directly.
-But they can be helpful for developer to do quick proptyping.
-While not displayed in the document and python file.
 Each expression node have subfields that can be visited from python side.
-
 For example, you can use addexp.a to get the left operand of an Add node.
 
 .. code-block:: python
 
-  x = tvm.var("n")
+  x = tvm.tir.Var("n", "int32")
   y = x + 2
   assert(isinstance(y, tvm.tir.Add))
   assert(y.a == x)
 """
 import tvm._ffi
 
-from tvm.runtime import Object, ObjectGeneric, DataType, TypeCode, const
+from tvm.runtime import Object, ObjectGeneric, DataType, DataTypeCode, const
 from tvm.ir import PrimExpr
 import tvm.ir._ffi_api
 from . import generic as _generic
@@ -50,13 +47,13 @@ def _dtype_is_int(value):
     if isinstance(value, int):
         return True
     return (isinstance(value, ExprOp) and
-            DataType(value.dtype).type_code == TypeCode.INT)
+            DataType(value.dtype).type_code == DataTypeCode.INT)
 
 def _dtype_is_float(value):
     if isinstance(value, float):
         return True
     return (isinstance(value, ExprOp) and
-            DataType(value.dtype).type_code == TypeCode.FLOAT)
+            DataType(value.dtype).type_code == DataTypeCode.FLOAT)
 
 class ExprOp(object):
     """Operator overloading for Expr like expressions."""
@@ -147,7 +144,7 @@ class ExprOp(object):
     def __invert__(self):
         if _dtype_is_float(self):
             raise RuntimeError("Cannot use ~ operator on float type Expr.")
-        return _ffi_api.Call(self.dtype, "bitwise_not", [self], Call.PureIntrinsic, None, 0)
+        return _ffi_api.Call(self.dtype, "bitwise_not", [self], Call.PureIntrinsic)
 
     def __lt__(self, other):
         return _ffi_api._OpLT(self, other)
@@ -169,7 +166,7 @@ class ExprOp(object):
 
     def __nonzero__(self):
         raise ValueError("Cannot use and / or / not operator to Expr, hint: " +
-                         "use tvm.all / tvm.any instead")
+                         "use tvm.tir.all / tvm.tir.any instead")
 
     def __bool__(self):
         return self.__nonzero__()
@@ -288,7 +285,7 @@ class CmpExpr(PrimExprWithOp):
 class LogicalExpr(PrimExprWithOp):
     pass
 
-@tvm._ffi.register_object("Variable")
+@tvm._ffi.register_object("tir.Var")
 class Var(PrimExprWithOp):
     """Symbolic variable.
 
@@ -297,7 +294,7 @@ class Var(PrimExprWithOp):
     name : str
         The name
 
-    dtype : str
+    dtype : Union[str, tvm.irType]
         The data type
     """
     def __init__(self, name, dtype):
@@ -305,7 +302,7 @@ class Var(PrimExprWithOp):
             _ffi_api.Var, name, dtype)
 
 
-@tvm._ffi.register_object
+@tvm._ffi.register_object("tir.SizeVar")
 class SizeVar(Var):
     """Symbolic variable to represent a tensor index size
        which is greater or equal to zero.
@@ -346,8 +343,8 @@ class IterVar(Object, ExprOp):
 
     See Also
     --------
-    tvm.thread_axis: Create thread axis IterVar.
-    tvm.reduce_axis: Create reduce axis IterVar.
+    te.thread_axis: Create thread axis IterVar.
+    te.reduce_axis: Create reduce axis IterVar.
     """
     DataPar = 0
     ThreadIndex = 1
@@ -370,7 +367,8 @@ class IterVar(Object, ExprOp):
                 raise TypeError("dom need to be Range")
 
         name = var if var is not None else "iter"
-        var = Var(name, dtype="int32") if not isinstance(var, Var) else var
+        dtype = "int32" if dom is None else dom.extent.dtype
+        var = Var(name, dtype=dtype) if not isinstance(var, Var) else var
         self.__init_handle_by_constructor__(
             _ffi_api.IterVar, dom, var, iter_type, thread_tag)
 
@@ -441,6 +439,7 @@ class FloatImm(ConstExpr):
         self.__init_handle_by_constructor__(
             tvm.ir._ffi_api.FloatImm, dtype, value)
 
+
 @tvm._ffi.register_object
 class IntImm(ConstExpr):
     """Int constant.
@@ -457,8 +456,23 @@ class IntImm(ConstExpr):
         self.__init_handle_by_constructor__(
             tvm.ir._ffi_api.IntImm, dtype, value)
 
+    def __hash__(self):
+        return self.value
+
     def __int__(self):
         return self.value
+
+    def __nonzero__(self):
+        return self.value != 0
+
+    def __eq__(self, other):
+        return _ffi_api._OpEQ(self, other)
+
+    def __ne__(self, other):
+        return _ffi_api._OpNE(self, other)
+
+    def __bool__(self):
+        return self.__nonzero__()
 
 
 @tvm._ffi.register_object
@@ -812,7 +826,7 @@ class Select(PrimExprWithOp):
     Note
     ----
     Select may compute both true_value and false_value.
-    Use :any:`tvm.if_then_else` instead if you want to
+    Use :py:class:`tvm.tir.if_then_else` instead if you want to
     get a conditional expression that only evaluates
     the correct branch.
 
@@ -855,6 +869,40 @@ class Load(PrimExprWithOp):
         args = [] if predicate is None else [predicate]
         self.__init_handle_by_constructor__(
             _ffi_api.Load, dtype, buffer_var, index, *args)
+
+
+@tvm._ffi.register_object
+class BufferLoad(PrimExprWithOp):
+    """Buffer load node.
+
+    Parameters
+    ----------
+    buffer : Buffer
+        The buffer to be loaded.
+
+    indices : List[PrimExpr]
+        The buffer indices.
+    """
+    def __init__(self, buffer, indices):
+        self.__init_handle_by_constructor__(
+            _ffi_api.BufferLoad, buffer, indices)
+
+
+@tvm._ffi.register_object
+class ProducerLoad(PrimExprWithOp):
+    """Producer load node.
+
+    Parameters
+    ----------
+    producer : DataProducer
+        The buffer to be loaded.
+
+    indices : List[PrimExpr]
+        The buffer indices.
+    """
+    def __init__(self, producer, indices):
+        self.__init_handle_by_constructor__(
+            _ffi_api.ProducerLoad, producer, indices)
 
 
 @tvm._ffi.register_object
@@ -928,22 +976,15 @@ class Call(PrimExprWithOp):
 
     call_type : int
         The type of the call
-
-    func : Operation, optional
-        Operation if call_type is Halide
-
-    value_index : int
-        The output value index
     """
     Extern = 0
     ExternCPlusPlus = 1
     PureExtern = 2
-    Halide = 3
     Intrinsic = 4
     PureIntrinsic = 5
-    def __init__(self, dtype, name, args, call_type, func, value_index):
+    def __init__(self, dtype, name, args, call_type):
         self.__init_handle_by_constructor__(
-            _ffi_api.Call, dtype, name, args, call_type, func, value_index)
+            _ffi_api.Call, dtype, name, args, call_type)
 
 
 @tvm._ffi.register_object
@@ -964,3 +1005,11 @@ class Let(PrimExprWithOp):
     def __init__(self, var, value, body):
         self.__init_handle_by_constructor__(
             _ffi_api.Let, var, value, body)
+
+
+@tvm._ffi.register_object
+class Any(PrimExpr):
+    """Any node.
+    """
+    def __init__(self):
+        self.__init_handle_by_constructor__(_ffi_api.Any)

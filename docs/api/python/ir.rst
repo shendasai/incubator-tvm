@@ -20,3 +20,12 @@ tvm.ir
 .. automodule:: tvm.ir
    :members:
    :imported-members:
+   :autosummary:
+
+
+tvm.transform
+-------------
+.. automodule:: tvm.transform
+   :members:
+   :imported-members:
+   :autosummary:

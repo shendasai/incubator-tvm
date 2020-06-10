@@ -21,6 +21,7 @@ import os
 import ctypes
 # Import TVM first to get library symbols
 import tvm
+from tvm import te
 
 def load_lib():
     """Load library, the functions will be registered into TVM"""
@@ -57,7 +58,7 @@ nd_get_additional_info = tvm.get_global_func("tvm_ext.nd_get_additional_info")
 class NDSubClass(tvm.nd.NDArrayBase):
     """Example for subclassing TVM's NDArray infrastructure.
 
-    By inheriting TMV's NDArray, external libraries could
+    By inheriting TVM's NDArray, external libraries could
     leverage TVM's FFI without any modification.
     """
 

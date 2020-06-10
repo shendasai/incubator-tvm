@@ -16,13 +16,14 @@
 # under the License.
 #pylint: disable=unused-argument, not-context-manager
 """Automatic quantization toolkit."""
-from __future__ import absolute_import
+import tvm.ir
+import tvm
+from tvm.runtime import Object
+
 from . import _quantize
 from ._calibrate import calibrate
 from .. import expr as _expr
 from .. import transform as _transform
-from ... import make as _make
-from ..base import Object, register_relay_node
 
 
 class QAnnotateKind(object):
@@ -52,7 +53,7 @@ def _forward_op(ref_call, args):
         ref_call.op, args, ref_call.attrs, ref_call.type_args)
 
 
-@register_relay_node("relay.quantize.QConfig")
+@tvm._ffi.register_object("relay.quantize.QConfig")
 class QConfig(Object):
     """Configure the quantization behavior by setting config variables.
 
@@ -120,7 +121,7 @@ class QConfig(Object):
         return self
 
     def __exit__(self, ptype, value, trace):
-        _quantize._ExitQConfigScope(self)
+        _quantize._ExitQConfigScope()
 
     def __setattr__(self, name, value):
         if name in QConfig._node_defaults:
@@ -181,7 +182,7 @@ def qconfig(**kwargs):
     """
     node_args = {k: v if k not in kwargs else kwargs[k]
                  for k, v in QConfig._node_defaults.items()}
-    return _make.node("relay.quantize.QConfig", **node_args)
+    return tvm.ir.make_node("relay.quantize.QConfig", **node_args)
 
 
 class QuantizeContext(object):
@@ -240,7 +241,7 @@ def partition():
 
     Returns
     -------
-    ret: tvm.relay.Pass
+    ret: tvm.transform.Pass
         The registered pass for VTA rewrite.
     """
     return _quantize.QuantizePartition()
@@ -253,7 +254,7 @@ def annotate():
 
     Returns
     -------
-    ret: tvm.relay.Pass
+    ret: tvm.transform.Pass
         The registered pass for quantization annotation.
     """
     return _quantize.QuantizeAnnotate()
@@ -267,7 +268,7 @@ def realize():
 
     Returns
     -------
-    ret: tvm.relay.Pass
+    ret: tvm.transform.Pass
         The registered pass for quantization realization.
     """
     return _quantize.QuantizeRealize()
@@ -298,11 +299,12 @@ def prerequisite_optimize(mod, params=None):
     """ Prerequisite optimization passes for quantization. Perform
     "SimplifyInference", "FoldScaleAxis", "FoldConstant", and
     "CanonicalizeOps" optimization before quantization. """
-    optimize = _transform.Sequential([_transform.SimplifyInference(),
-                                      _transform.FoldConstant(),
-                                      _transform.FoldScaleAxis(),
-                                      _transform.CanonicalizeOps(),
-                                      _transform.FoldConstant()])
+    optimize = tvm.transform.Sequential(
+        [_transform.SimplifyInference(),
+         _transform.FoldConstant(),
+         _transform.FoldScaleAxis(),
+         _transform.CanonicalizeOps(),
+         _transform.FoldConstant()])
 
     if params:
         mod['main'] = _bind_params(mod['main'], params)
@@ -336,19 +338,20 @@ def quantize(mod, params=None, dataset=None):
     """
     mod = prerequisite_optimize(mod, params)
 
-    calibrate_pass = _transform.module_pass(calibrate(dataset), opt_level=1,
-                                            name="QuantizeCalibrate")
+    calibrate_pass = tvm.transform.module_pass(
+        calibrate(dataset), opt_level=1,
+        name="QuantizeCalibrate")
     quant_passes = [partition(),
                     annotate(),
                     calibrate_pass]
     if not current_qconfig().do_simulation:
         quant_passes.append(realize())
     quant_passes.append(_transform.FoldConstant())
-    quantize_seq = _transform.Sequential(quant_passes)
-    with _transform.PassContext(opt_level=3,
-                                required_pass=["QuantizeAnnotate",
-                                               "QuantizeCalibrate",
-                                               "QuantizeRealize"]):
+    quantize_seq = tvm.transform.Sequential(quant_passes)
+    with tvm.transform.PassContext(opt_level=3,
+                                   required_pass=["QuantizeAnnotate",
+                                                  "QuantizeCalibrate",
+                                                  "QuantizeRealize"]):
         with quantize_context():
             mod = quantize_seq(mod)
 

@@ -19,6 +19,7 @@
 import numpy as np
 import pytest
 import tvm
+from tvm import te
 from tvm import relay
 from tvm.relay import create_executor, transform
 from tvm.relay.testing import ctx_list, check_grad, run_infer_type
@@ -166,7 +167,7 @@ def test_squeeze():
 
 
 def test_transpose_infer_type():
-    n, t, d = tvm.size_var("n"), tvm.size_var("t"), 100
+    n, t, d = te.size_var("n"), te.size_var("t"), 100
     x = relay.var("x", relay.TensorType((n, t, d), "float32"))
     y = relay.transpose(x, axes=(1, 0, 2))
     assert "axes=" in y.astext()
@@ -274,7 +275,7 @@ def test_reshape_like_infer_type():
     assert zz.checked_type == relay.TensorType((1, 6), "float32")
 
     # symbolic shape
-    n, c, h, w = tvm.size_var("n"), 2, 3, tvm.size_var("w")
+    n, c, h, w = te.size_var("n"), 2, 3, te.size_var("w")
     x = relay.var("x", relay.TensorType((n, c, h, w), "float32"))
     y = relay.var("y", relay.TensorType((1, 8, 8), "float32"))
     z = relay.reshape_like(x, y)
@@ -313,8 +314,8 @@ def test_take_infer_type():
         yy = run_infer_type(y)
         assert yy.checked_type == relay.TensorType(oshape, "float32")
 
-    d1, d2, d3 = tvm.var("d1"), tvm.var("d2"), tvm.var("d3")
-    d4, d5, d6 = tvm.var("d4"), tvm.var("d5"), tvm.var("d6")
+    d1, d2, d3 = te.var("d1"), te.var("d2"), te.var("d3")
+    d4, d5, d6 = te.var("d4"), te.var("d5"), te.var("d6")
     verify_take((d1,), (1,), (1,), 0)
     verify_take((4,), (d1, d2), (d1, d2))
     verify_take((3, 3, 3), (1, d2), (1, d2))
@@ -368,12 +369,12 @@ def test_split_infer_type():
         yy = run_infer_type(y.astuple())
         assert yy.checked_type == ret_type
 
-    idxd = tvm.indexdiv
+    idxd = tvm.tir.indexdiv
 
-    d1, d2, d3, d4 = tvm.var("d1"), tvm.var("d2"), tvm.var("d3"), tvm.var("d4")
-    axis = tvm.var("axis")
+    d1, d2, d3, d4 = te.var("d1"), te.var("d2"), te.var("d3"), te.var("d4")
+    axis = te.var("axis")
     verify_split((5, 5, 2, 2), 5,
-                 relay.ty.TupleType(tvm.convert([
+                 relay.ty.TupleType(tvm.runtime.convert([
                      relay.ty.TensorType((5, 1, 2, 2), "float32"),
                      relay.ty.TensorType((5, 1, 2, 2), "float32"),
                      relay.ty.TensorType((5, 1, 2, 2), "float32"),
@@ -381,7 +382,7 @@ def test_split_infer_type():
                      relay.ty.TensorType((5, 1, 2, 2), "float32")])),
                   axis=1)
     verify_split((5, 5, 2, 2), 5,
-                 relay.ty.TupleType(tvm.convert([
+                 relay.ty.TupleType(tvm.runtime.convert([
                      relay.ty.TensorType((1, 5, 2, 2), "float32"),
                      relay.ty.TensorType((1, 5, 2, 2), "float32"),
                      relay.ty.TensorType((1, 5, 2, 2), "float32"),
@@ -389,19 +390,19 @@ def test_split_infer_type():
                      relay.ty.TensorType((1, 5, 2, 2), "float32")])),
                   axis=0)
     verify_split((d1, d2, d3, d4), 4,
-                 relay.ty.TupleType(tvm.convert([
+                 relay.ty.TupleType(tvm.runtime.convert([
                      relay.ty.TensorType((d1, d2, idxd(d3, 4), d4), "float32"),
                      relay.ty.TensorType((d1, d2, idxd(d3, 4), d4), "float32"),
                      relay.ty.TensorType((d1, d2, idxd(d3, 4), d4), "float32"),
                      relay.ty.TensorType((d1, d2, idxd(d3, 4), d4), "float32")])),
                   axis=2)
     verify_split((d1, d2, d3, d4), 2,
-                 relay.ty.TupleType(tvm.convert([
+                 relay.ty.TupleType(tvm.runtime.convert([
                      relay.ty.TensorType((idxd(d1, 2), d2, d3, d4), "float32"),
                      relay.ty.TensorType((idxd(d1, 2), d2, d3, d4), "float32")])),
                   axis=0)
     verify_split((d1, d2, d3, d4), (2, 4, 7),
-                 relay.ty.TupleType(tvm.convert([
+                 relay.ty.TupleType(tvm.runtime.convert([
                      relay.ty.TensorType((d1, 2, d3, d4), "float32"),
                      relay.ty.TensorType((d1, 2, d3, d4), "float32"),
                      relay.ty.TensorType((d1, 3, d3, d4), "float32"),
@@ -447,7 +448,7 @@ def test_full_like_infer_type():
     assert yy.checked_type == relay.TensorType((1, 2, 3), "float32")
 
     # symbolic shape
-    n, c, h, w = tvm.size_var("n"), 2, 3, tvm.size_var("w")
+    n, c, h, w = te.size_var("n"), 2, 3, te.size_var("w")
     base = relay.var("base", relay.TensorType((n, c, h, w), "float32"))
     fill = relay.var("fill", relay.TensorType((), "float32"))
     y = relay.full_like(base, fill)
@@ -475,7 +476,7 @@ def test_full_like():
 
 
 def test_infer_type_leaky_relu():
-    n, c , h, w = tvm.size_var("n"), tvm.size_var("c"), tvm.size_var("h"), tvm.size_var("w")
+    n, c , h, w = te.size_var("n"), te.size_var("c"), te.size_var("h"), te.size_var("w")
     x = relay.var("x", relay.TensorType((n, c, h, w), "float32"))
     y = relay.nn.leaky_relu(x, alpha=0.1)
     "alpha=0.1" in y.astext()
@@ -539,7 +540,7 @@ def verify_infer_type_prelu(data, alpha, axis, output, dtype="float32"):
 
 
 def test_infer_type_prelu():
-    n, c , h, w = tvm.size_var("n"), tvm.size_var("c"), tvm.size_var("h"), tvm.size_var("w")
+    n, c , h, w = te.size_var("n"), te.size_var("c"), te.size_var("h"), te.size_var("w")
     verify_infer_type_prelu((n, c, h, w), (c,), 1, (n, c, h, w))
     verify_infer_type_prelu((n, h, w, c), (c,), 3, (n, h, w, c))
     verify_infer_type_prelu((n, c, h, w), None, 1, (n, c, h, w))
@@ -662,6 +663,54 @@ def test_reverse():
     verify_reverse((2, 3, 4), -1)
 
 
+def test_scatter():
+
+    def ref_scatter(data, indices, updates, axis=0):
+        idx = np.indices(indices.shape).reshape(indices.ndim, -1)
+
+        updated_idx = np.copy(idx)
+        indices = indices.reshape(-1)
+        for i in range(len(indices)):
+            updated_idx[axis, i] = indices[i]
+        scattered = np.copy(data)
+        scattered[tuple(updated_idx)] = updates[tuple(idx)]
+        return scattered
+
+    def verify_scatter(dshape, ishape, axis=0):
+        d = relay.var("d", relay.TensorType(dshape, "float32"))
+        i = relay.var("i", relay.TensorType(ishape, "int64"))
+        u = relay.var("u", relay.TensorType(ishape, "float32"))
+        z = relay.op.scatter(d, i, u, axis)
+
+        func = relay.Function([d, i, u], z)
+
+        data_np = np.random.uniform(size=dshape).astype("float32")
+        updates_np = np.random.uniform(size=ishape).astype("float32")
+        indices_np = np.random.randint(-dshape[axis], dshape[axis] - 1, ishape).astype("int64")
+
+        ref_res = ref_scatter(data_np, indices_np, updates_np, axis)
+        # TODO(mbrookhart): expand testing when adding more backend schedules
+        for target, ctx in [("llvm", tvm.cpu())]:
+            for kind in ["graph", "debug"]:
+                intrp = relay.create_executor(kind, ctx=ctx, target=target)
+                op_res = intrp.evaluate(func)(data_np, indices_np, updates_np)
+                tvm.testing.assert_allclose(
+                    op_res.asnumpy(), ref_res, rtol=1e-5)
+
+    verify_scatter((10, ), (10, ), 0)
+    verify_scatter((10, 5), (10, 5), -2)
+    verify_scatter((10, 5), (10, 5), -1)
+    verify_scatter((10, 5), (3, 5), 0)
+    verify_scatter((12, 4), (7, 2), 1)
+    verify_scatter((2, 3, 4), (1, 3, 4), 0)
+    verify_scatter((2, 3, 4), (2, 1, 4), 1)
+    verify_scatter((2, 3, 4), (2, 3, 1), 2)
+    verify_scatter((2, 3, 4, 5), (1, 3, 4, 5), 0)
+    verify_scatter((6, 3, 4, 5), (2, 3, 4, 5), 1)
+    verify_scatter((2, 3, 8, 5), (2, 3, 1, 1), 2)
+    verify_scatter((16, 16, 4, 5), (16, 16, 4, 5), 3)
+
+
 def test_gather_nd():
     def verify_gather_nd(xshape, yshape, y_data):
         x = relay.var("x", relay.TensorType(xshape, "float32"))
@@ -681,6 +730,123 @@ def test_gather_nd():
     verify_gather_nd((2, 2, 2), (2, 2), [[0, 1], [1, 0]])
     verify_gather_nd((3, 2, 2), (2, 2), [[0, 1], [1, 0]])
     verify_gather_nd((3, 2), (2, 2, 3), [[[0, 1, 2], [2, 0, 1]], [[0, 0, 0], [1, 1, 1]]])
+
+
+def _verify_infiniteness_ops(relay_op, ref_op):
+    for dtype in ['float32', 'float16', 'float16', 'int32', 'int16']:
+        shape = (2, 8, 8)
+        x = relay.var("x", relay.TensorType(shape, dtype))
+        y = relay_op(x)
+        yy = run_infer_type(y)
+        assert yy.checked_type == relay.TensorType(shape, "bool")
+
+        data = np.random.uniform(size=shape).astype(dtype)
+        if dtype.startswith('float'):
+            data.ravel()[np.random.choice(data.size, int(data.size * 0.5), replace=False)] = np.infty
+            data.ravel()[np.random.choice(data.size, int(data.size * 0.5), replace=False)] = np.nan
+
+        intrp = create_executor()
+        op_res = intrp.evaluate(y, {x: data})
+        ref_res = ref_op(data)
+        np.testing.assert_allclose(op_res.asnumpy(), ref_res, rtol=0.01)
+
+
+def test_isfinite():
+    _verify_infiniteness_ops(relay.isfinite, np.isfinite)
+
+
+def test_isinf():
+    _verify_infiniteness_ops(relay.isinf, np.isinf)
+
+    
+def test_unravel_index():
+    def verify_unravel_index(indices, shape, dtype):
+        x_data = np.array(indices).astype(dtype)
+        y_data = np.array(shape).astype(dtype)
+        x = relay.var("x", relay.TensorType(x_data.shape, dtype))
+        y = relay.var("y", relay.TensorType(y_data.shape, dtype))
+
+        z = relay.unravel_index(x, y)
+        zz = run_infer_type(z)
+
+        if len(x_data.shape) == 1:
+            out_shape = [y_data.shape[0], x_data.shape[0]]
+        else:
+            out_shape = [y_data.shape[0]]
+        assert zz.checked_type == relay.ty.TensorType(out_shape, dtype)
+
+        func = relay.Function([x, y], z)
+        ref_res = np.unravel_index(x_data, y_data)
+        for target, ctx in ctx_list():
+            for kind in ["graph", "debug"]:
+                intrp = relay.create_executor(kind, ctx=ctx, target=target)
+                op_res = intrp.evaluate(func)(x_data, y_data)
+                tvm.testing.assert_allclose(op_res.asnumpy(), ref_res, rtol=1e-5)
+
+    for dtype in ["int64", "int32"]:
+        verify_unravel_index([0, 1, 2, 3], [2, 2], dtype)
+        verify_unravel_index([144], [5, 5, 5, 2], dtype)
+        verify_unravel_index(144, [5, 5, 5, 2], dtype)
+        verify_unravel_index([100, 13, 5], [5, 5, 5, 2], dtype)
+
+        # In below example, 5 is out of bound for array of size 4.
+        # Numpy implementation throws error for it
+        # TVM implementation does not throw error instead it produces
+        # output which is inline with Tensorflow
+        # verify_unravel_index([0, 1, 2, 5], [2, 2], dtype)
+
+def test_sparse_to_dense():
+    def verify_sparse_to_dense(sparse_indices, sparse_values, default_value, output_shape, xpected):
+        sparse_indices_data = np.array(sparse_indices)
+        sparse_values_data = np.array(sparse_values)
+        default_value_data = np.array(default_value)
+
+        a = relay.var("a", relay.TensorType(sparse_indices_data.shape, str(sparse_indices_data.dtype)))
+        b = relay.var("b", relay.TensorType(sparse_values_data.shape, str(sparse_values_data.dtype)))
+        if default_value is None:
+            args = [a, b]
+            d = relay.sparse_to_dense(a, output_shape, b)
+        else:
+            c = relay.var("c", relay.TensorType(default_value_data.shape, str(default_value_data.dtype)))
+            args = [a, b, c]
+            d = relay.sparse_to_dense(a, output_shape, b, c)
+
+        zz = run_infer_type(d)
+        assert zz.checked_type == relay.ty.TensorType(output_shape, str(sparse_values_data.dtype))
+
+        func = relay.Function(args, d)
+        for target, ctx in ctx_list():
+            for kind in ["graph", "debug"]:
+                intrp = relay.create_executor(kind, ctx=ctx, target=target)
+                if default_value is None:
+                    op_res = intrp.evaluate(func)(sparse_indices_data, sparse_values_data)
+                else:
+                    op_res = intrp.evaluate(func)(
+                        sparse_indices_data, sparse_values_data, default_value_data
+                    )
+                tvm.testing.assert_allclose(op_res.asnumpy(), xpected, rtol=1e-5)
+
+
+    verify_sparse_to_dense(1, 3, 0, [5], [0, 3, 0, 0, 0])  # scalar
+    verify_sparse_to_dense([0, 1, 4], [3, 3, 3], 0, [5], [3, 3, 0, 0, 3])  # vector
+    verify_sparse_to_dense([[0, 0], [1, 2]], [1, 2], 0, [3, 4], [[1, 0, 0, 0], [0, 0, 2, 0], [0, 0, 0, 0]])  # nXd
+    verify_sparse_to_dense(
+        [[0, 0, 0], [1, 2, 3]],
+        [1, 2],
+        4,
+        [2, 3, 4],
+        [[[1, 4, 4, 4], [4, 4, 4, 4], [4, 4, 4, 4]], [[4, 4, 4, 4], [4, 4, 4, 4], [4, 4, 4, 2]]]
+    )  # nXd
+    verify_sparse_to_dense([0, 1, 4], [3.1, 3.1, 3.1], 3.5, [5], [3.1, 3.1, 3.5, 3.5, 3.1])  # floats
+    verify_sparse_to_dense(1, 3, None, [5], [0, 3, 0, 0, 0])  # default value not specified
+
+    #negative test cases
+    #sparse indices should be ints
+    #verify_sparse_to_dense([[0.1, 1.1, 4.1], [0,2,4]], [3.1, 3.1, 3.1], 3.5, [5], [3.1, 3.1, 3.5, 3.5, 3.1])
+    #sparse_values should be 0d or 1d only
+    #verify_sparse_to_dense([[0, 1, 4], [0, 2, 4]], [[[3.1, 3.1, 3.1]]], 3.5, [5], [3.1, 3.1, 3.5, 3.5, 3.1])
+    #sparse_indices should not be > 2d tensor
+    #verify_sparse_to_dense([[[[0, 1, 4], [0, 2, 4]]]], [[[[3.1, 3.1, 3.1]]]], 3.5, [5], [3.1, 3.1, 3.5, 3.5, 3.1])
 
 if __name__ == "__main__":
     test_arange()
@@ -712,3 +878,7 @@ if __name__ == "__main__":
     test_tile()
     test_repeat()
     test_gather_nd()
+    test_isfinite()
+    test_isinf()
+    test_unravel_index()
+    test_sparse_to_dense()

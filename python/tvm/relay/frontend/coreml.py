@@ -17,7 +17,6 @@
 # pylint: disable=invalid-name, import-self, unused-argument, unused-variable
 # pylint: disable=inconsistent-return-statements, import-outside-toplevel
 """CoreML frontend."""
-from __future__ import absolute_import as _abs
 import math
 import numpy as np
 import tvm
@@ -25,6 +24,7 @@ from tvm.ir import IRModule
 
 from .. import analysis
 from .. import expr as _expr
+from .. import function as _function
 from .. import op as _op
 from ... import nd as _nd
 from ..._ffi import base as _base
@@ -77,10 +77,7 @@ def _ConvolutionLayerParams(op, inexpr, etab):
             pad_b = valid.paddingAmounts.borderAmounts[0].endEdgeSize
             pad_r = valid.paddingAmounts.borderAmounts[1].endEdgeSize
             if not all(v == 0 for v in (pad_t, pad_l, pad_b, pad_r)):
-                inexpr = _op.nn.pad(data=inexpr, pad_width=((0, 0),
-                                                            (0, 0),
-                                                            (pad_t, pad_b),
-                                                            (pad_l, pad_r)))
+                params['padding'] = (pad_t, pad_l, pad_b, pad_r)
     elif op.WhichOneof('ConvolutionPaddingType') == 'same':
         assert op.same.asymmetryMode == 0, "Only support BOTTOM_RIGHT_HEAVY mode, " \
                                            "which is used by tf/caffe and so on"
@@ -88,11 +85,7 @@ def _ConvolutionLayerParams(op, inexpr, etab):
         strides = params['strides']
         pad_t, pad_b = get_pad_value(H, kernel[0], strides[0])
         pad_l, pad_r = get_pad_value(W, kernel[1], strides[1])
-        inexpr = _op.nn.pad(data=inexpr, pad_width=((0, 0),
-                                                    (0, 0),
-                                                    (pad_t, pad_b),
-                                                    (pad_l, pad_r)))
-
+        params['padding'] = (pad_t, pad_l, pad_b, pad_r)
     else:
         raise NotImplementedError("Valid/Same convolution padding implemented")
 
@@ -504,6 +497,6 @@ def from_coreml(model, shape=None):
                for o in spec.description.output]
     # for now return first output
     outexpr = outexpr[0]
-    func = _expr.Function(analysis.free_vars(outexpr), outexpr)
+    func = _function.Function(analysis.free_vars(outexpr), outexpr)
     params = {k:_nd.array(np.array(v, dtype=np.float32)) for k, v in etab.params.items()}
     return IRModule.from_expr(func), params

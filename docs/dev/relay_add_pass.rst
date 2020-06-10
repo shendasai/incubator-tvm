@@ -292,7 +292,7 @@ pointed to by ``op->index``. The reason we need to check is because
 .. code:: c
 
     Expr VisitExpr_(const CallNode* call) final {
-      static auto op_stateful = Op::GetAttr<TOpIsStateful>("TOpIsStateful");
+      static auto op_stateful = Op::GetAttrMap<TOpIsStateful>("TOpIsStateful");
       Expr res = ExprMutator::VisitExpr_(call);
       call = res.as<CallNode>();
       // We don't constant fold function with zero arguments.
@@ -401,6 +401,6 @@ in `src/relay/pass/`_.
 
 .. _include/tvm/relay/transform.h: https://github.com/apache/incubator-tvm/blob/master/include/tvm/relay/transform.h
 
-.. _src/relay/pass: https://github.com/apache/incubator-tvm/tree/master/src/relay/pass
+.. _src/relay/pass/: https://github.com/apache/incubator-tvm/tree/master/src/relay/pass
 
 .. _src/relay/pass/fold_constant.cc: https://github.com/apache/incubator-tvm/blob/master/src/relay/pass/fold_constant.cc

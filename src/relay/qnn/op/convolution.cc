@@ -21,14 +21,17 @@
  * \file src/relay/qnn/op/convolution.cc
  * \brief Property def of qnn convolution operator.
  */
-#include <tvm/tir/data_layout.h>
+#include "../../op/nn/convolution.h"
+
 #include <tvm/relay/analysis.h>
 #include <tvm/relay/base.h>
 #include <tvm/relay/op.h>
 #include <tvm/relay/qnn/attrs.h>
 #include <tvm/relay/transform.h>
-#include "../../op/nn/convolution.h"
-#include "../../pass/pattern_util.h"
+#include <tvm/tir/analysis.h>
+#include <tvm/tir/data_layout.h>
+
+#include "../../transforms/pattern_util.h"
 #include "../util.h"
 
 namespace tvm {
@@ -68,8 +71,25 @@ bool QnnConv2DRel(const Array<Type>& types, int num_inputs, const Attrs& attrs,
   return Conv2DRel<Conv2DAttrs>(tensor_types, 3, attrs, reporter);
 }
 
+Array<Array<Layout>> QnnConvInferCorrectLayout(const Attrs& attrs,
+                                               const Array<Layout>& new_in_layouts,
+                                               const Array<Layout>& old_in_layouts,
+                                               const Array<tvm::relay::Type>& old_in_types) {
+  // Use Relay Conv2D Infer correct layout.
+  auto layouts =
+      ConvInferCorrectLayout<Conv2DAttrs>(attrs, new_in_layouts, old_in_layouts, old_in_types);
+
+  // Fill the layouts of remaining input tensors - scales and zero points. The layouts of these
+  // tensors can be treated as channel layout.
+  Layout channel_layout = Layout("C");
+  Array<Layout> input_layouts = {layouts[0][0],  layouts[0][1],  channel_layout,
+                                 channel_layout, channel_layout, channel_layout};
+  Array<Layout> output_layouts = layouts[1];
+  return {input_layouts, output_layouts};
+}
+
 bool is_depthwise(const Conv2DAttrs* param) {
-  return param->channels.defined() && tvm::tir::Equal(param->channels, param->groups) &&
+  return param->channels.defined() && tvm::tir::ExprDeepEqual()(param->channels, param->groups) &&
          param->groups != 1;
 }
 
@@ -177,13 +197,17 @@ Expr Conv2DFallBack(const Expr& data, const Expr& weight, const Expr& input_zero
 Expr Conv2DPadInput(const Expr& data, const Expr& input_zero_point, const Conv2DAttrs* param) {
   // 1) Pad the input data
   auto padded_data = data;
-  auto pad_h_value = get_const_int(param->padding[0]);
-  auto pad_w_value = get_const_int(param->padding[1]);
-  if (pad_h_value != 0 || pad_w_value != 0) {
+  auto pad_top_value = get_const_int(param->padding[0]);
+  auto pad_left_value = get_const_int(param->padding[1]);
+  auto pad_bottom_value = get_const_int(param->padding[2]);
+  auto pad_right_value = get_const_int(param->padding[3]);
+  bool do_pad =
+      pad_top_value != 0 || pad_left_value != 0 || pad_bottom_value != 0 || pad_right_value != 0;
+  if (do_pad) {
     Array<IndexExpr> pad_n({0, 0});
     Array<IndexExpr> pad_c({0, 0});
-    Array<IndexExpr> pad_h({param->padding[0], param->padding[0]});
-    Array<IndexExpr> pad_w({param->padding[1], param->padding[1]});
+    Array<IndexExpr> pad_h({param->padding[0], param->padding[2]});
+    Array<IndexExpr> pad_w({param->padding[1], param->padding[3]});
 
     Array<Array<IndexExpr>> pad_width;
     if (param->data_layout == "NCHW") {
@@ -336,7 +360,7 @@ Expr DepthwiseConv2DFourthTerm(int input_zero_point_int, int kernel_zero_point_i
  */
 Expr Conv2DFirstTerm(const Expr& padded_data, const Expr& weight, const Conv2DAttrs* param) {
   // Lowering for Term 1
-  Array<IndexExpr> padding({0, 0});
+  Array<IndexExpr> padding({0, 0, 0, 0});
   return Conv2D(padded_data, weight, param->strides, padding, param->dilation, param->groups,
                 param->channels, param->kernel_size, param->data_layout, param->kernel_layout,
                 param->out_layout, param->out_dtype);
@@ -583,7 +607,6 @@ Expr QnnConv2DCanonicalize(const Attrs& attrs, const Array<Expr>& new_args,
   const auto* param = attrs.as<Conv2DAttrs>();
   CHECK(param != nullptr);
   // Assertion checks for exisiing support.
-  CHECK_EQ(param->padding.size(), 2) << "qnn.conv2d only supports 2D padding";
   CHECK(param->data_layout == "NCHW" || param->data_layout == "NHWC")
       << "qnn.conv2d supports only NCHW/NHWC input data layout.";
   CHECK(param->kernel_layout == "OIHW" || param->kernel_layout == "HWIO" ||
@@ -639,8 +662,8 @@ Expr QnnConv2DCanonicalize(const Attrs& attrs, const Array<Expr>& new_args,
 Expr MakeQnnConv2D(Expr data, Expr weight, Expr input_zero_point, Expr kernel_zero_point,
                    Expr input_scale, Expr kernel_scale, Array<IndexExpr> strides,
                    Array<IndexExpr> padding, Array<IndexExpr> dilation, int groups,
-                   IndexExpr channels, Array<IndexExpr> kernel_size, std::string data_layout,
-                   std::string kernel_layout, std::string out_layout, DataType out_dtype) {
+                   IndexExpr channels, Array<IndexExpr> kernel_size, String data_layout,
+                   String kernel_layout, String out_layout, DataType out_dtype) {
   auto attrs = make_object<Conv2DAttrs>();
   attrs->strides = std::move(strides);
   attrs->padding = std::move(padding);
@@ -653,13 +676,12 @@ Expr MakeQnnConv2D(Expr data, Expr weight, Expr input_zero_point, Expr kernel_ze
   attrs->out_layout = std::move(out_layout);
   attrs->out_dtype = std::move(out_dtype);
   static const Op& op = Op::Get("qnn.conv2d");
-  return CallNode::make(
-      op, {data, weight, input_zero_point, kernel_zero_point, input_scale, kernel_scale},
-      Attrs(attrs), {});
+  return Call(op, {data, weight, input_zero_point, kernel_zero_point, input_scale, kernel_scale},
+              Attrs(attrs), {});
 }
 
 RELAY_REGISTER_OP("qnn.conv2d")
-.describe(R"code(2D quantized convolution layer.
+    .describe(R"code(2D quantized convolution layer.
 This operator convolves quantized weight with quantized data. The scale of the
 output quantized tensor is the product of the weight_scale and input_scale of
 the input quantized tensors. The zero point of the output quantized tensor is
@@ -671,17 +693,19 @@ operator to understand how to scale back the int32 output to (u)int8.
 - **out**:  This depends on the `layout` parameter. Output is 4D array of shape
             (batch_size, channels, out_height, out_width) if `layout` is `NCHW`.
 )code" TVM_ADD_FILELINE)
-.set_attrs_type<Conv2DAttrs>()
-.set_num_inputs(6)
-.add_argument("data", "Tensor", "The quantized input data tensor.")
-.add_argument("weight", "Tensor", "The quantized weight tensor.")
-.add_argument("input_scale", "Tensor", "The quantization scale of the input tensor.")
-.add_argument("input_zero_point", "Tensor", "The quantization zero_point of the input tensor.")
-.add_argument("weight_scale", "Tensor", "The quantization scale of the weight tensor.")
-.add_argument("weight_zero_point", "Tensor", "The quantization zero_point of the weight tensor.")
-.set_support_level(11)
-.add_type_rel("QnnConv2D", QnnConv2DRel)
-.set_attr<FTVMLegalize>("FTVMQnnCanonicalize", QnnConv2DCanonicalize);
+    .set_attrs_type<Conv2DAttrs>()
+    .set_num_inputs(6)
+    .add_argument("data", "Tensor", "The quantized input data tensor.")
+    .add_argument("weight", "Tensor", "The quantized weight tensor.")
+    .add_argument("input_scale", "Tensor", "The quantization scale of the input tensor.")
+    .add_argument("input_zero_point", "Tensor", "The quantization zero_point of the input tensor.")
+    .add_argument("weight_scale", "Tensor", "The quantization scale of the weight tensor.")
+    .add_argument("weight_zero_point", "Tensor",
+                  "The quantization zero_point of the weight tensor.")
+    .set_support_level(11)
+    .add_type_rel("QnnConv2D", QnnConv2DRel)
+    .set_attr<FTVMLegalize>("FTVMQnnCanonicalize", QnnConv2DCanonicalize)
+    .set_attr<FInferCorrectLayout>("FInferCorrectLayout", QnnConvInferCorrectLayout);
 
 TVM_REGISTER_GLOBAL("relay.qnn.op._make.conv2d").set_body_typed(MakeQnnConv2D);
 

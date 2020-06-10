@@ -25,11 +25,12 @@
 #define TVM_IR_TYPE_FUNCTOR_H_
 
 #include <tvm/node/functor.h>
-#include <tvm/relay/expr.h>
 #include <tvm/relay/adt.h>
+#include <tvm/relay/expr.h>
+
 #include <string>
-#include <vector>
 #include <utility>
+#include <vector>
 
 namespace tvm {
 
@@ -37,16 +38,13 @@ template <typename FType>
 class TypeFunctor;
 
 // functions to be overriden.
-#define TYPE_FUNCTOR_DEFAULT                                            \
+#define TYPE_FUNCTOR_DEFAULT \
   { return VisitTypeDefault_(op, std::forward<Args>(args)...); }
 
-
-#define TVM_TYPE_FUNCTOR_DISPATCH(OP)                                   \
-  vtable.template set_dispatch<OP>(                                     \
-      [](const ObjectRef& n, TSelf* self, Args... args) {               \
-        return self->VisitType_(static_cast<const OP*>(n.get()),        \
-                                std::forward<Args>(args)...);           \
-      });
+#define TVM_TYPE_FUNCTOR_DISPATCH(OP)                                                      \
+  vtable.template set_dispatch<OP>([](const ObjectRef& n, TSelf* self, Args... args) {     \
+    return self->VisitType_(static_cast<const OP*>(n.get()), std::forward<Args>(args)...); \
+  });
 
 template <typename R, typename... Args>
 class TypeFunctor<R(const Type& n, Args...)> {
@@ -65,9 +63,7 @@ class TypeFunctor<R(const Type& n, Args...)> {
    * \param args Additional arguments.
    * \return The result of the call
    */
-  R operator()(const Type& n, Args... args) {
-    return VisitType(n, std::forward<Args>(args)...);
-  }
+  R operator()(const Type& n, Args... args) { return VisitType(n, std::forward<Args>(args)...); }
   /*!
    * \brief The functor call.
    * \param n The expression node.
@@ -80,8 +76,7 @@ class TypeFunctor<R(const Type& n, Args...)> {
     return vtable(n, this, std::forward<Args>(args)...);
   }
   // Functions that can be overriden by subclass
-  virtual R VisitType_(const TensorTypeNode* op,
-                       Args... args) TYPE_FUNCTOR_DEFAULT;
+  virtual R VisitType_(const TensorTypeNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
   virtual R VisitType_(const TypeVarNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
   virtual R VisitType_(const TypeConstraintNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
   virtual R VisitType_(const FuncTypeNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
@@ -93,6 +88,7 @@ class TypeFunctor<R(const Type& n, Args...)> {
   virtual R VisitType_(const TypeCallNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
   virtual R VisitType_(const TypeDataNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
   virtual R VisitType_(const PrimTypeNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
+  virtual R VisitType_(const PointerTypeNode* op, Args... args) TYPE_FUNCTOR_DEFAULT;
   virtual R VisitTypeDefault_(const Object* op, Args...) {
     LOG(FATAL) << "Do not have a default for " << op->GetTypeKey();
     throw;  // unreachable, written to stop compiler warning
@@ -115,6 +111,7 @@ class TypeFunctor<R(const Type& n, Args...)> {
     TVM_TYPE_FUNCTOR_DISPATCH(TypeCallNode);
     TVM_TYPE_FUNCTOR_DISPATCH(TypeDataNode);
     TVM_TYPE_FUNCTOR_DISPATCH(PrimTypeNode);
+    TVM_TYPE_FUNCTOR_DISPATCH(PointerTypeNode);
     return vtable;
   }
 };
@@ -124,8 +121,7 @@ class TypeFunctor<R(const Type& n, Args...)> {
 /*!
  * \brief A type visitor that recursively visit types.
  */
-class TVM_DLL TypeVisitor :
-      public TypeFunctor<void(const Type& n)> {
+class TVM_DLL TypeVisitor : public TypeFunctor<void(const Type& n)> {
  public:
   void VisitType_(const TypeVarNode* op) override;
   void VisitType_(const IncompleteTypeNode* op) override;
@@ -138,13 +134,13 @@ class TVM_DLL TypeVisitor :
   void VisitType_(const TypeCallNode* op) override;
   void VisitType_(const TypeDataNode* op) override;
   void VisitType_(const PrimTypeNode* op) override;
+  void VisitType_(const PointerTypeNode* op) override;
 };
 
 /*!
  * \brief TypeMutator that mutates expressions.
  */
-class TVM_DLL TypeMutator :
-      public TypeFunctor<Type(const Type& n)> {
+class TVM_DLL TypeMutator : public TypeFunctor<Type(const Type& n)> {
  public:
   Type VisitType(const Type& t) override;
   Type VisitType_(const TypeVarNode* op) override;
@@ -158,6 +154,7 @@ class TVM_DLL TypeMutator :
   Type VisitType_(const TypeCallNode* op) override;
   Type VisitType_(const TypeDataNode* op) override;
   Type VisitType_(const PrimTypeNode* op) override;
+  Type VisitType_(const PointerTypeNode* op) override;
 
  private:
   Array<Type> MutateArray(Array<Type> arr);

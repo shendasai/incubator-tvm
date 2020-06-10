@@ -118,7 +118,7 @@ class XGBoostCostModel(CostModel):
         else:
             raise RuntimeError("Invalid loss type: " + loss_type)
 
-        self.xgb_params['silent'] = 1
+        self.xgb_params['verbosity'] = 0
         if num_threads:
             self.xgb_params['nthread'] = num_threads
         self.bst = None
@@ -219,8 +219,7 @@ class XGBoostCostModel(CostModel):
         # filter data, only pick the data with a same task
         data = []
         for inp, res in records:
-            if inp.task.name == self.task.name and \
-                            inp.config.template_key == self.task.config_space.template_key:
+            if inp.task.name == self.task.name:
                 data.append((inp, res))
 
         logger.debug("XGB load %d entries from history log file", len(data))

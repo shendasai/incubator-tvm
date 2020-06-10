@@ -23,8 +23,8 @@
  */
 
 #include <tvm/ir/type.h>
-#include <tvm/runtime/registry.h>
 #include <tvm/relay/base.h>
+#include <tvm/runtime/registry.h>
 
 namespace tvm {
 namespace relay {
@@ -33,8 +33,13 @@ using namespace tvm::runtime;
 
 TVM_REGISTER_NODE_TYPE(IdNode);
 
-TVM_REGISTER_GLOBAL("ir.NodeSetSpan")
-.set_body_typed([](ObjectRef node_ref, Span sp) {
+Id::Id(String name_hint) {
+  ObjectPtr<IdNode> n = make_object<IdNode>();
+  n->name_hint = std::move(name_hint);
+  data_ = std::move(n);
+}
+
+TVM_REGISTER_GLOBAL("ir.NodeSetSpan").set_body_typed([](ObjectRef node_ref, Span sp) {
   if (auto* rn = node_ref.as<RelayNode>()) {
     rn->span = sp;
   } else if (auto* rn = node_ref.as<RelayExprNode>()) {

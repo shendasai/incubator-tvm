@@ -16,6 +16,7 @@
 # under the License.
 
 import tvm
+from tvm import te
 import numpy as np
 from tvm import relay
 from tvm.contrib import graph_runtime
@@ -31,7 +32,7 @@ def quantize_test_driver(in_dtype, quant_args, axis, out_dtype, in_data, verify_
                                              out_dtype=out_dtype)
     mod = relay.Function(relay.analysis.free_vars(quantized_output), quantized_output)
     mod = tvm.IRModule.from_expr(mod)
-    with relay.build_config(opt_level=3):
+    with tvm.transform.PassContext(opt_level=3):
         graph, lib, params = relay.build(mod, "llvm", params=None)
         rt_mod = graph_runtime.create(graph, lib, ctx=tvm.cpu(0))
         rt_mod.set_input(input_data=in_data)

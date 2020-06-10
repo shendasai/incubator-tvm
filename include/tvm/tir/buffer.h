@@ -24,17 +24,19 @@
 #ifndef TVM_TIR_BUFFER_H_
 #define TVM_TIR_BUFFER_H_
 
+#include <tvm/ir/expr.h>
 #include <tvm/node/container.h>
-#include <tvm/tir/expr.h>
-#include <tvm/tir/op.h>
+#include <tvm/tir/var.h>
 
 #include <string>
-
 
 namespace tvm {
 namespace tir {
 // Internal node container Buffer
 class BufferNode;
+
+// forward declare Stmt
+class Stmt;
 
 /*! \brief buffer type */
 enum BufferType : int {
@@ -74,10 +76,9 @@ class Buffer : public ObjectRef {
    * \param content_lanes The number of lanes for the (data) type.
    * \param offset The offset of ptr.
    */
-  TVM_DLL PrimExpr access_ptr(int access_mask,
-                          DataType ptr_type = DataType::Handle(),
-                          int content_lanes = 1,
-                          PrimExpr offset = make_const(DataType::Int(32), 0)) const;
+  TVM_DLL PrimExpr access_ptr(int access_mask, DataType ptr_type = DataType::Handle(),
+                              int content_lanes = 1,
+                              PrimExpr offset = IntImm(DataType::Int(32), 0)) const;
   /*!
    * \brief Create an Expr that does a vector load at begin index.
    * \param begin The beginning index
@@ -150,6 +151,26 @@ class BufferNode : public Object {
     v->Visit("buffer_type", &buffer_type);
   }
 
+  bool SEqualReduce(const BufferNode* other, SEqualReducer equal) const {
+    // Use DefEqual as buffer can define variables
+    // in its semantics, skip name as name is not important.
+    return equal.DefEqual(data, other->data) && equal(dtype, other->dtype) &&
+           equal.DefEqual(shape, other->shape) && equal.DefEqual(strides, other->strides) &&
+           equal.DefEqual(elem_offset, other->elem_offset) && equal(scope, other->scope) &&
+           equal(data_alignment, other->data_alignment) && equal(buffer_type, other->buffer_type);
+  }
+
+  void SHashReduce(SHashReducer hash_reduce) const {
+    hash_reduce.DefHash(data);
+    hash_reduce(dtype);
+    hash_reduce.DefHash(shape);
+    hash_reduce.DefHash(strides);
+    hash_reduce.DefHash(elem_offset);
+    hash_reduce(scope);
+    hash_reduce(data_alignment);
+    hash_reduce(buffer_type);
+  }
+
   /*! \return preferred index type for this buffer node */
   DataType DefaultIndexType() const {
     return shape.size() != 0 ? shape[0].dtype() : DataType::Int(32);
@@ -157,18 +178,14 @@ class BufferNode : public Object {
 
   // User can specify data_alignment and offset_factor to be 0
   // A default value will be picked.
-  TVM_DLL static Buffer make(Var ptr,
-                             DataType dtype,
-                             Array<PrimExpr> shape,
-                             Array<PrimExpr> strides,
-                             PrimExpr elem_offset,
-                             std::string name,
-                             std::string scope,
-                             int data_alignment,
-                             int offset_factor,
+  TVM_DLL static Buffer make(Var ptr, DataType dtype, Array<PrimExpr> shape,
+                             Array<PrimExpr> strides, PrimExpr elem_offset, std::string name,
+                             std::string scope, int data_alignment, int offset_factor,
                              BufferType buffer_type);
 
   static constexpr const char* _type_key = "Buffer";
+  static constexpr const bool _type_has_method_sequal_reduce = true;
+  static constexpr const bool _type_has_method_shash_reduce = true;
   TVM_DECLARE_FINAL_OBJECT_INFO(BufferNode, Object);
 };
 
@@ -184,9 +201,63 @@ inline const BufferNode* Buffer::operator->() const {
  * \return The created buffer.
  * \sa BufferNode::make for complete constructor.
  */
-TVM_DLL Buffer decl_buffer(Array<PrimExpr> shape,
-                           DataType dtype = DataType::Float(32),
+TVM_DLL Buffer decl_buffer(Array<PrimExpr> shape, DataType dtype = DataType::Float(32),
                            std::string name = "buffer");
+
+/*!
+ * \brief Base node for data producers.
+ *
+ *  A DataProducer stores necessary information(e.g. a tensor expression) to produce
+ *  a multi-dimensional array. The stored information is opaque to the TIR.
+ *  DataProducer can appear in high-level DSLs that are built on top of the TIR.
+ *
+ *  A valid TIR PrimFunc should not contain any DataProducer, high level DSLs should lower
+ *  all DataProducers to Buffers before TIR transformations.
+ *
+ * \sa tvm::te::Tensor
+ */
+class DataProducerNode : public Object {
+ public:
+  /*! \brief destructor. */
+  virtual ~DataProducerNode() {}
+  /*!
+   * \brief Get the shape of the result.
+   * \return The shape.
+   */
+  virtual Array<PrimExpr> GetShape() const = 0;
+  /*!
+   * \brief Get the data type of the result.
+   * \return The data type.
+   */
+  virtual DataType GetDataType() const = 0;
+  /*!
+   * \brief Get the name hint of the data producer.
+   * \return The data type.
+   */
+  virtual String GetNameHint() const = 0;
+
+  bool SEqualReduce(const DataProducerNode* other, SEqualReducer equal) const {
+    // because buffer producer is opaque, we just do pointer equality.
+    return this == other;
+  }
+
+  void SHashReduce(SHashReducer hash_reduce) const {}
+
+  static constexpr const char* _type_key = "DataProducer";
+  static constexpr const bool _type_has_method_sequal_reduce = true;
+  static constexpr const bool _type_has_method_shash_reduce = true;
+  TVM_DECLARE_BASE_OBJECT_INFO(DataProducerNode, Object);
+};
+
+/*!
+ * \brief Managed reference to DataProducerNode.
+ * \sa DataProducerNode
+ */
+class DataProducer : public ObjectRef {
+ public:
+  TVM_DEFINE_OBJECT_REF_METHODS(DataProducer, ObjectRef, DataProducerNode);
+};
+
 }  // namespace tir
 }  // namespace tvm
 #endif  // TVM_TIR_BUFFER_H_

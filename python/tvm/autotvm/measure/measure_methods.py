@@ -33,9 +33,12 @@ import tempfile
 
 import numpy as np
 
-from ... import ir_pass, build, build_config, nd, TVMError, register_func, \
-    rpc as _rpc, target as _target
-from ...contrib import nvcc, ndk, tar
+import tvm._ffi
+import tvm.ir.transform
+from tvm import nd, rpc as _rpc, target as _target
+from tvm.error import TVMError
+from tvm.driver import build
+from tvm.contrib import nvcc, ndk, tar
 
 from ..util import get_const_tuple
 from ..env import AutotvmGlobalScope
@@ -228,7 +231,7 @@ class RPCRunner(Runner):
     def get_build_kwargs(self):
         kwargs = {}
         if 'cuda' in self.task.target.keys or 'opencl' in self.task.target.keys or \
-           'rocm' in self.task.target.keys:
+           'rocm' in self.task.target.keys or 'vulkan' in self.task.target.keys:
             remote = request_remote(self.key, self.host, self.port)
             ctx = remote.context(str(self.task.target), 0)
             max_dims = ctx.max_thread_dimensions
@@ -242,6 +245,8 @@ class RPCRunner(Runner):
 
             if 'cuda' in self.task.target.keys:
                 kwargs["cuda_arch"] = "sm_" + "".join(ctx.compute_version.split('.'))
+        if self.task.target.device_name == 'micro_dev':
+            kwargs.setdefault('build_option', {})['tir.disable_vectorize'] = True
 
         return kwargs
 
@@ -355,7 +360,7 @@ def _build_func_common(measure_input, check_gpu=None, cuda_arch=None, build_opti
 
         opts = build_option or {}
         if check_gpu:  # Add verify pass to filter out invalid configs in advance.
-            opts["add_lower_pass"] = [(2, gpu_verify_pass(**check_gpu))]
+            opts["tir.add_lower_pass"] = [(2, gpu_verify_pass(**check_gpu))]
         if cuda_arch:
             set_cuda_target_arch(cuda_arch)
 
@@ -366,7 +371,7 @@ def _build_func_common(measure_input, check_gpu=None, cuda_arch=None, build_opti
             import vta
             func = vta.build(s, args, target_host=task.target_host)
         else:
-            with build_config(**opts):
+            with tvm.ir.transform.PassContext(config=opts):
                 func = build(s, args, target_host=task.target_host)
     return func, tuple((get_const_tuple(x.shape), x.dtype) for x in args)
 
@@ -581,7 +586,7 @@ def check_remote(target, device_key, host=None, port=None, priority=100, timeout
     return not t.is_alive()
 
 
-@register_func
+@tvm._ffi.register_func
 def tvm_callback_cuda_compile(code):
     """use nvcc to generate ptx code for better optimization"""
     curr_cuda_target_arch = AutotvmGlobalScope.current.cuda_target_arch
@@ -611,9 +616,9 @@ def gpu_verify_pass(**kwargs):
     """Verify the validity of a gpu kernel.
     This pass will check memory usage and number of threads per block.
     """
-    def verify_pass(stmt):
-        valid = ir_pass.VerifyGPUCode(stmt, kwargs)
+    def verify_pass(f, *_):
+        valid = tvm.tir.analysis.verify_gpu_code(f, kwargs)
         if not valid:
             raise InstantiationError("Skipped because of invalid gpu kernel")
-        return stmt
-    return verify_pass
+        return f
+    return tvm.tir.transform.prim_func_pass(verify_pass, opt_level=0)

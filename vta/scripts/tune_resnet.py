@@ -24,6 +24,7 @@ from PIL import Image
 
 import topi
 import tvm
+from tvm import te
 from tvm import rpc, autotvm, relay
 from tvm.autotvm.measure.measure_methods import request_remote
 from tvm.autotvm.tuner import XGBTuner, GATuner, RandomTuner, GridSearchTuner
@@ -60,13 +61,13 @@ def parse_arguments():
 def register_vta_tuning_tasks():
     from tvm.autotvm.task.topi_integration import TaskExtractEnv, deserialize_args
 
-    @tvm.tag_scope(tag=topi.tag.ELEMWISE)
+    @tvm.te.tag_scope(tag=topi.tag.ELEMWISE)
     def my_clip(x, a_min, a_max):
         """Unlike topi's current clip, put min and max into two stages."""
-        const_min = tvm.const(a_min, x.dtype)
-        const_max = tvm.const(a_max, x.dtype)
-        x = tvm.compute(x.shape, lambda *i: tvm.min(x(*i), const_max), name="clipA")
-        x = tvm.compute(x.shape, lambda *i: tvm.max(x(*i), const_min), name="clipB")
+        const_min = tvm.tir.const(a_min, x.dtype)
+        const_max = tvm.tir.const(a_max, x.dtype)
+        x = te.compute(x.shape, lambda *i: tvm.te.min(x(*i), const_max), name="clipA")
+        x = te.compute(x.shape, lambda *i: tvm.te.max(x(*i), const_min), name="clipB")
         return x
 
     # init autotvm env to register VTA operator
@@ -87,7 +88,7 @@ def register_vta_tuning_tasks():
         if tvm.target.Target.current().device_name == 'vta':
             s = topi.generic.schedule_conv2d_nchw([res])
         else:
-            s = tvm.create_schedule([res.op])
+            s = te.create_schedule([res.op])
         return s, [A, W, res]
 
     @autotvm.task.register("topi_nn_dense", override=True)
@@ -105,7 +106,7 @@ def register_vta_tuning_tasks():
         if tvm.target.Target.current().device_name == 'vta':
             s = topi.generic.schedule_dense([res])
         else:
-            s = tvm.create_schedule([res.op])
+            s = te.create_schedule([res.op])
 
         return s, [A, W, res]
 
@@ -126,7 +127,7 @@ def compile_network(opt, env, target):
 
     # Perform quantization in Relay
     # Note: We set opt_level to 3 in order to fold batch norm
-    with relay.build_config(opt_level=3):
+    with tvm.transform.PassContext(opt_level=3):
         with relay.quantize.qconfig(global_scale=8.0,
                                     skip_conv_layers=[0]):
             relay_prog = relay.quantize.quantize(mod["main"], params=params)
@@ -246,7 +247,7 @@ if __name__ == '__main__':
     print("Extracting tasks...")
     tasks = extract_from_program(func=relay_prog,
                                  params=params,
-                                 ops=(tvm.relay.op.nn.conv2d,),
+                                 ops=(relay.op.get("nn.conv2d"),),
                                  target=target,
                                  target_host=env.target_host)
 
@@ -270,16 +271,16 @@ if __name__ == '__main__':
 
         # Compile network
         print("Compiling network with best tuning parameters...")
-        with relay.build_config(opt_level=3, disabled_pass={"AlterOpLayout"}):
-            if target.device_name != "vta":
+        if target.device_name != "vta":
+            with tvm.transform.PassContext(opt_level=3, disabled_pass={"AlterOpLayout"}):
                 graph, lib, params = relay.build(
                     relay_prog, target=target,
                     params=params, target_host=env.target_host)
-            else:
-                with vta.build_config():
-                    graph, lib, params = relay.build(
-                        relay_prog, target=target,
-                        params=params, target_host=env.target_host)
+        else:
+            with vta.build_config(opt_level=3, disabled_pass={"AlterOpLayout"}):
+                graph, lib, params = relay.build(
+                    relay_prog, target=target,
+                    params=params, target_host=env.target_host)
 
         # Export library
         temp = util.tempdir()

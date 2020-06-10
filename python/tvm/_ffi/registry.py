@@ -19,7 +19,6 @@
 """FFI registry to register function and objects."""
 import sys
 import ctypes
-from .. import _api_internal
 
 from .base import _LIB, check_call, py_str, c_str, string_types, _FFI_MODE, _RUNTIME_ONLY
 
@@ -123,7 +122,7 @@ def register_extension(cls, fcreate=None):
 
        @tvm.register_extension
        class MyTensor(object):
-           _tvm_tcode = tvm.TypeCode.ARRAY_HANDLE
+           _tvm_tcode = tvm.ArgTypeCode.ARRAY_HANDLE
 
            def __init__(self):
                self.handle = _LIB.NewDLTensor()
@@ -133,8 +132,8 @@ def register_extension(cls, fcreate=None):
                return self.handle.value
     """
     assert hasattr(cls, "_tvm_tcode")
-    if fcreate and cls._tvm_tcode < TypeCode.EXT_BEGIN:
-        raise ValueError("Cannot register create when extension tcode is same as buildin")
+    if fcreate:
+        raise ValueError("Extension with fcreate is no longer supported")
     _reg_extension(cls, fcreate)
     return cls
 
@@ -288,17 +287,11 @@ def _init_api_prefix(module_name, prefix):
     module = sys.modules[module_name]
 
     for name in list_global_func_names():
-        if prefix == "api":
-            fname = name
-            if name.startswith("_"):
-                target_module = sys.modules["tvm._api_internal"]
-            else:
-                target_module = module
-        else:
-            if not name.startswith(prefix):
-                continue
-            fname = name[len(prefix)+1:]
-            target_module = module
+        if not name.startswith(prefix):
+            continue
+
+        fname = name[len(prefix)+1:]
+        target_module = module
 
         if fname.find(".") != -1:
             continue

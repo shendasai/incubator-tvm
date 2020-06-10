@@ -17,20 +17,22 @@
 """Test code for bilinear scale """
 import numpy as np
 import tvm
+from tvm import te
 import topi
 import topi.testing
+from tvm.contrib.pickle_memoize import memoize
 
 from common import get_all_backend
 
 def verify_resize(batch, in_channel, in_height, in_width, out_height, out_width,
                   layout='NCHW', coord_trans="align_corners", method="bilinear"):
     if layout == 'NCHW':
-        A = tvm.placeholder((batch, in_channel, in_height, in_width), name='A', dtype='float32')
+        A = te.placeholder((batch, in_channel, in_height, in_width), name='A', dtype='float32')
         dtype = A.dtype
         out_shape = (batch, in_channel, out_height, out_width)
         a_np = np.random.uniform(size=(batch, in_channel, in_height, in_width)).astype(dtype)
     elif layout == 'NHWC':
-        A = tvm.placeholder((batch, in_height, in_width, in_channel), name='A', dtype='float32')
+        A = te.placeholder((batch, in_height, in_width, in_channel), name='A', dtype='float32')
         dtype = A.dtype
         out_shape = (batch, out_height, out_width, in_channel)
         a_np = np.random.uniform(size=(batch, in_height, in_width, in_channel)).astype(dtype)
@@ -52,7 +54,7 @@ def verify_resize(batch, in_channel, in_height, in_width, out_height, out_width,
             return
         print("Running on target: %s" % device)
         with tvm.target.create(device):
-            s = topi.generic.schedule_injective(B)
+            s = topi.testing.get_injective_schedule(device)(B)
         a = tvm.nd.array(a_np, ctx)
         b = tvm.nd.array(np.zeros(out_shape, dtype=dtype), ctx)
         f = tvm.build(s, [A, B], device)
@@ -84,12 +86,12 @@ def test_resize():
 def verify_resize3d(batch, in_channel, in_depth, in_height, in_width, out_depth, out_height, out_width,
                     layout='NCDHW', coordinate_transformation_mode="half_pixel", method="trilinear"):
     if layout == 'NCDHW':
-        A = tvm.placeholder((batch, in_channel, in_depth, in_height, in_width), name='A', dtype='float32')
+        A = te.placeholder((batch, in_channel, in_depth, in_height, in_width), name='A', dtype='float32')
         dtype = A.dtype
         out_shape = (batch, in_channel, out_depth, out_height, out_width)
         a_np = np.random.uniform(size=(batch, in_channel, in_depth, in_height, in_width)).astype(dtype)
     elif layout == 'NDHWC':
-        A = tvm.placeholder((batch, in_depth, in_height, in_width, in_channel), name='A', dtype='float32')
+        A = te.placeholder((batch, in_depth, in_height, in_width, in_channel), name='A', dtype='float32')
         dtype = A.dtype
         out_shape = (batch, out_depth, out_height, out_width, in_channel)
         a_np = np.random.uniform(size=(batch, in_depth, in_height, in_width, in_channel)).astype(dtype)
@@ -116,7 +118,7 @@ def verify_resize3d(batch, in_channel, in_depth, in_height, in_width, out_depth,
             return
         print("Running on target: %s" % device)
         with tvm.target.create(device):
-            s = topi.generic.schedule_injective(B)
+            s = topi.testing.get_injective_schedule(device)(B)
         a = tvm.nd.array(a_np, ctx)
         b = tvm.nd.array(np.zeros(out_shape, dtype=dtype), ctx)
         f = tvm.build(s, [A, B], device)
@@ -146,10 +148,10 @@ def test_crop_and_resize():
     def verify_crop_and_resize(image_shape, np_boxes, np_box_indices, np_crop_size, layout='NHWC',
                                method="bilinear", extrapolation_value=0.0):
 
-        images = tvm.placeholder(image_shape, name='images', dtype='float32')
+        images = te.placeholder(image_shape, name='images', dtype='float32')
         np_images = np.random.uniform(size=image_shape).astype("float32")
-        boxes = tvm.placeholder(np_boxes.shape, name="boxes", dtype="float32")
-        box_ind = tvm.placeholder(np_box_indices.shape, name="box_ind", dtype="int32")
+        boxes = te.placeholder(np_boxes.shape, name="boxes", dtype="float32")
+        box_ind = te.placeholder(np_box_indices.shape, name="box_ind", dtype="int32")
 
         batch = len(np_box_indices)
         target_height, target_width = np_crop_size[0], np_crop_size[1]
@@ -176,7 +178,7 @@ def test_crop_and_resize():
                 return
             print("Running on target: %s" % device)
             with tvm.target.create(device):
-                s = topi.generic.schedule_injective(out)
+                s = topi.testing.get_injective_schedule(device)(out)
             tvm_images = tvm.nd.array(np_images, ctx)
             tvm_boxes = tvm.nd.array(np_boxes, ctx)
             tvm_indices = tvm.nd.array(np_box_indices, ctx)
@@ -203,7 +205,89 @@ def test_crop_and_resize():
                            size_1, method='nearest_neighbor')
     verify_crop_and_resize((1, 3, 224, 224), boxes_1, indices_1, size_1, layout="NCHW")
 
+
+def test_affine_grid():
+    def verify_affine_grid(num_batch, target_shape):
+        dtype = "float32"
+        data_shape = (num_batch, 2, 3)
+        data = te.placeholder(data_shape, dtype=dtype)
+        out = topi.image.affine_grid(data, target_shape)
+
+        @memoize("topi.tests.test_affine_grid.verify_affine_grid")
+        def get_ref_data():
+            data_np = np.random.uniform(size=data_shape).astype(dtype)
+            out_np = topi.testing.affine_grid_python(data_np, target_shape)
+            return data_np, out_np
+
+        data_np, out_np = get_ref_data()
+
+        def check_device(device):
+            ctx = tvm.context(device, 0)
+            if not ctx.exist:
+                print("Skip because %s is not enabled" % device)
+                return
+            print("Running on target: %s" % device)
+            with tvm.target.create(device):
+                s = topi.testing.get_injective_schedule(device)(out)
+            tvm_data = tvm.nd.array(data_np, ctx)
+            tvm_out = tvm.nd.empty(out_np.shape, dtype, ctx)
+            f = tvm.build(s, [data, out], device)
+            f(tvm_data, tvm_out)
+
+            tvm.testing.assert_allclose(
+                tvm_out.asnumpy(), out_np, rtol=1e-5, atol=1e-5)
+
+        for device in get_all_backend():
+            check_device(device)
+
+    verify_affine_grid(1, (16, 32))
+    verify_affine_grid(4, (16, 32))
+
+
+def test_grid_sample():
+    def verify_grid_sample(data_shape, grid_shape):
+        dtype = "float32"
+        data = te.placeholder(data_shape, dtype=dtype)
+        grid = te.placeholder(grid_shape, dtype=dtype)
+        out = topi.image.grid_sample(data, grid, 'bilinear')
+
+        @memoize("topi.tests.test_grid_sample.verify_grid_sample")
+        def get_ref_data():
+            data_np = np.random.uniform(size=data_shape).astype(dtype)
+            # allow grid values to be out-of-bound
+            grid_np = np.random.uniform(size=grid_shape, low=-1.5, high=1.5).astype(dtype)
+            out_np = topi.testing.grid_sample_nchw_python(data_np, grid_np, 'bilinear')
+            return data_np, grid_np, out_np
+
+        data_np, grid_np, out_np = get_ref_data()
+
+        def check_device(device):
+            ctx = tvm.context(device, 0)
+            if not ctx.exist:
+                print("Skip because %s is not enabled" % device)
+                return
+            print("Running on target: %s" % device)
+            with tvm.target.create(device):
+                s = topi.testing.get_injective_schedule(device)(out)
+            tvm_data = tvm.nd.array(data_np, ctx)
+            tvm_grid = tvm.nd.array(grid_np, ctx)
+            tvm_out = tvm.nd.empty(out_np.shape, dtype, ctx)
+            f = tvm.build(s, [data, grid, out], device)
+            f(tvm_data, tvm_grid, tvm_out)
+
+            tvm.testing.assert_allclose(
+                tvm_out.asnumpy(), out_np, rtol=1e-5, atol=1e-5)
+
+        for device in get_all_backend():
+            check_device(device)
+
+    verify_grid_sample((4, 4, 16, 32), (4, 2, 8, 8))
+    verify_grid_sample((4, 4, 16, 32), (4, 2, 32, 32))
+
+
 if __name__ == "__main__":
     test_resize()
     test_resize3d()
     test_crop_and_resize()
+    test_affine_grid()
+    test_grid_sample()

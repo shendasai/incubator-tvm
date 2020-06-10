@@ -18,7 +18,8 @@
 """QNN dialect operators."""
 
 from __future__ import absolute_import as _abs
-from tvm.relay.expr import Tuple
+from tvm.relay.expr import Tuple, TupleWrapper
+from tvm.relay.op.nn.util import get_pad_tuple2d
 from . import _make
 
 def requantize(data,
@@ -155,7 +156,7 @@ def concatenate(data,
 
     Parameters
     ----------
-    data : Union(List[relay.Expr], Tuple[relay.Expr])
+    data : Union(List[relay.Expr], Tuple[relay.Expr], TupleWrapper[relay.Expr])
         The list of quantized tensors.
 
     input_scales : List[relay.Expr]
@@ -179,15 +180,16 @@ def concatenate(data,
         The concatenated quantized tensor.
     """
 
-    data = list(data)
-    if not data:
-        raise ValueError("relay.concatenate requires data to be non-empty.")
+    if isinstance(data, (list, tuple)):
+        data = Tuple(data)
+    elif isinstance(data, TupleWrapper):
+        data = data.tuple_value
     if not isinstance(axis, int):
         raise ValueError("For now, we only support integer axis")
     input_scales = list(input_scales)
     input_zero_points = list(input_zero_points)
 
-    return _make.concatenate(Tuple(data),
+    return _make.concatenate(data,
                              Tuple(input_scales),
                              Tuple(input_zero_points),
                              output_scale,
@@ -280,6 +282,9 @@ def conv2d(data,
         The computed result.
     """
 
+    # TODO enforce 4-way padding in topi/nn/conv2d after #4644 merged
+    # convert 2-way padding to 4-way padding
+    padding = get_pad_tuple2d(padding)
     return _make.conv2d(data, kernel,
                         input_zero_point, kernel_zero_point,
                         input_scale, kernel_scale,
@@ -305,9 +310,6 @@ def add(lhs,
 
     rhs : relay.Expr
         The right hand side quantized input data.
-
-    lhs_scale: float
-        The scale of the lhs quantized expr.
 
     lhs_scale: relay.Expr
         The scale of the lhs quantized expr.
@@ -432,3 +434,51 @@ def mul(lhs, rhs, lhs_scale, lhs_zero_point, rhs_scale, rhs_zero_point,
                      lhs_scale, lhs_zero_point,
                      rhs_scale, rhs_zero_point,
                      output_scale, output_zero_point)
+
+
+def subtract(lhs,
+             rhs,
+             lhs_scale,
+             lhs_zero_point,
+             rhs_scale,
+             rhs_zero_point,
+             output_scale,
+             output_zero_point):
+    """Quantized subtraction with numpy-style broadcasting.
+
+    Parameters
+    ----------
+    lhs : relay.Expr
+        The left hand side quantized input data.
+
+    rhs : relay.Expr
+        The right hand side quantized input data.
+
+    lhs_scale: relay.Expr
+        The scale of the lhs quantized expr.
+
+    lhs_zero_point: relay.Expr
+       The zero point of lhs quantized expr.
+
+    rhs_scale: relay.Expr
+        The scale of the rhs quantized expr.
+
+    rhs_zero_point: relay.Expr
+       The zero point of rhs quantized expr.
+
+    output_scale: relay.Expr
+        The scale of the output quantized expr.
+
+    output_zero_point: relay.Expr
+       The zero point of output quantized expr.
+
+    Returns
+    -------
+    result : relay.Expr
+        The computed result.
+
+    """
+    return _make.subtract(lhs, rhs,
+                          lhs_scale, lhs_zero_point,
+                          rhs_scale, rhs_zero_point,
+                          output_scale, output_zero_point)

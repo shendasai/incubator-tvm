@@ -20,8 +20,9 @@
 /*!
  * \file auto_inline_elem_wise.cc
  */
-#include <tvm/te/schedule_pass.h>
+#include <tvm/runtime/registry.h>
 #include <tvm/te/operation.h>
+#include <tvm/te/schedule_pass.h>
 #include <tvm/tir/expr_functor.h>
 
 namespace tvm {
@@ -59,7 +60,6 @@ class ElemWiseDetector : public tir::ExprVisitor {
  private:
   Array<IterVar> axis_;
 };
-
 
 bool IsElemWise(const Operation& op) {
   if (const ComputeOpNode* compute = op.as<ComputeOpNode>()) {
@@ -110,6 +110,10 @@ void AutoInlineInjective(Schedule sch) {
     }
   }
 }
+
+TVM_REGISTER_GLOBAL("schedule.AutoInlineElemWise").set_body_typed(AutoInlineElemWise);
+
+TVM_REGISTER_GLOBAL("schedule.AutoInlineInjective").set_body_typed(AutoInlineInjective);
 
 }  // namespace te
 }  // namespace tvm

@@ -16,12 +16,11 @@
 # under the License.
 # pylint: disable=invalid-name, unused-argument
 """Backend QNN related feature registration"""
-from __future__ import absolute_import
+import numpy as np
 
 import tvm
 from tvm import relay
 from .. import op as reg
-from ...util import get_scalar_from_constant
 
 #################################################
 # Register the functions for different operators.
@@ -53,6 +52,15 @@ def qnn_dense_legalize(attrs, inputs, types):
 ###################
 # Helper functions.
 ###################
+
+def get_scalar_from_constant(expr):
+    """ Returns scalar value from Relay constant scalar. """
+    assert isinstance(expr, relay.Constant) and not expr.data.shape, \
+        "Expr is not a constant scalar."
+    value = expr.data.asnumpy()
+    assert value.dtype == np.dtype(np.int32) or value.dtype == np.dtype(np.float32), \
+        "value must be float32/int32"
+    return np.asscalar(value)
 
 # Helper function for lowering in the abscence of fast Int8 arithmetic units.
 def helper_no_fast_int8_hw_legalization(attrs, inputs, types, relay_op):
@@ -264,3 +272,17 @@ def _qnn_dense_legalize_intel_cpu(attrs, inputs, types):
     if is_fast_int8_on_intel():
         return helper_change_dtypes_to_uint8_int8(attrs, inputs, types, relay.qnn.op.dense)
     return helper_no_fast_int8_hw_legalization(attrs, inputs, types, relay.nn.dense)
+
+#####################
+# CUDA legalizations.
+#####################
+
+@qnn_conv2d_legalize.register('cuda')
+def _qnn_conv2d_legalize_cuda(attrs, inputs, types):
+    # CUDA prefers the dtypes to be same.
+    return helper_change_dtypes_to_be_same(attrs, inputs, types, relay.qnn.op.conv2d)
+
+@qnn_dense_legalize.register('cuda')
+def _qnn_dense_legalize_cuda(attrs, inputs, types):
+    # CUDA prefers the dtypes to be same.
+    return helper_change_dtypes_to_be_same(attrs, inputs, types, relay.qnn.op.dense)

@@ -16,6 +16,7 @@
 # under the License.
 
 import tvm
+from tvm import te
 import numpy as np
 from tvm import relay
 from tvm.contrib import graph_runtime
@@ -166,7 +167,7 @@ def qnn_dense_driver(test_configuration):
     mod = relay.Function(relay.analysis.free_vars(mod), mod)
     mod = tvm.IRModule.from_expr(mod)
     mod = relay.qnn.transform.CanonicalizeOps()(mod)
-    with relay.build_config(opt_level=2):
+    with tvm.transform.PassContext(opt_level=2):
         graph, lib, params = relay.build(mod, "llvm", params=None)
         mod = graph_runtime.create(graph, lib, ctx=tvm.cpu(0))
         mod.set_input(quantized_data_name, test_configuration[quantized_data_name])

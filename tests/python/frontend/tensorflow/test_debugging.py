@@ -15,7 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 """Unit tests for converting TensorFlow debugging ops to Relay."""
-import tensorflow as tf
+try:
+    import tensorflow.compat.v1 as tf
+    tf.disable_v2_behavior()
+except ImportError:
+    import tensorflow as tf
 import numpy as np
 from tvm import relay
 from tvm.relay.frontend.tensorflow import from_tensorflow
@@ -47,7 +51,8 @@ def test_assert_true():
         # do that, it's happening in Relay, and that optimization shouldn't
         # affect the arity of the main function. We should have to pass in
         # x_value here.
-        np.testing.assert_allclose(0, run_relay(g, {'input':shape}).asnumpy())
+        np.testing.assert_allclose(0, run_relay(g, {'input': shape}).asnumpy())
+
 
 def test_assert_true_var_capture():
     g = tf.Graph()
@@ -63,13 +68,11 @@ def test_assert_true_var_capture():
             x_value = np.random.rand()
             assert sess.run(assert_op, feed_dict={x: x_value}) is None
 
-        # ToDo: The frontend converter gets confused here as well, thinking
-        # that it needs to be told what x is twice. It also notes the output of
+        # TODO: The frontend converter notes the output of
         # the graph as a boolean, which is not correct - as you can see above,
-        # TF believes that the value of this graph is None. In addition, the
-        # arity of the translated function should be 1, not 2.
+        # TF believes that the value of this graph is None.
         np.testing.assert_allclose(True,
-            run_relay(g, None, x_value, x_value).asnumpy())
+                                   run_relay(g, None, x_value).asnumpy())
 
 def test_assert_false():
     g = tf.Graph()
@@ -89,9 +92,7 @@ def test_assert_false():
         # argument is false.
         np.testing.assert_allclose(0, run_relay(g).asnumpy())
 
-        
 if __name__ == "__main__":
     test_assert_true()
     test_assert_true_var_capture()
     test_assert_false()
-    

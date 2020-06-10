@@ -18,6 +18,7 @@
 import numpy as np
 
 import tvm
+from tvm import te
 from tvm.contrib import graph_runtime
 from tvm import relay
 from tvm.runtime import container
@@ -35,7 +36,7 @@ def benchmark_execution(mod,
                         model="unknown"):
     def get_graph_runtime_output(mod, data, params, target, ctx,
                                  dtype='float32', number=2, repeat=20):
-        with relay.build_config(opt_level=3):
+        with tvm.transform.PassContext(opt_level=3):
             graph, lib, params = relay.build(mod, target, params=params)
 
         m = graph_runtime.create(graph, lib, ctx)
@@ -58,7 +59,7 @@ def benchmark_execution(mod,
 
     def get_vm_output(mod, data, params, target, ctx, dtype='float32',
                       number=2, repeat=20):
-        with relay.build_config(opt_level=3):
+        with tvm.transform.PassContext(opt_level=3):
             exe = vm.compile(mod, target, params=params)
             rly_vm = vm_rt.VirtualMachine(exe)
             rly_vm.init(ctx)
@@ -73,7 +74,7 @@ def benchmark_execution(mod,
             prof_res = np.array(ftimer("main", data).results) * 1000
             print("Mean vm inference time (std dev): %.2f ms (%.2f ms)" %
                   (np.mean(prof_res), np.std(prof_res)))
-            
+
         return result.asnumpy().astype(dtype)
 
     # random input

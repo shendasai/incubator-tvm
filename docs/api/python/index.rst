@@ -21,23 +21,28 @@ Python API
 .. toctree::
    :maxdepth: 2
 
-   tvm
    runtime
    ndarray
    error
    ir
    target
-   intrin
-   tensor
-   schedule
-   build
-   function
+   tir
+   te
+   driver
+   relay/index
+   relay/frontend
+   relay/nn
+   relay/vision
+   relay/image
+   relay/transform
+   relay/analysis
+   relay/backend
+   relay/dataflow_pattern
+   relay/testing
    autotvm
    rpc
+   micro
    contrib
    graph_runtime
-   dev
-   topi
    vta/index
-   hybrid
-   relay/index
+   topi

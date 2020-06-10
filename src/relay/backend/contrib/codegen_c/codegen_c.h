@@ -25,7 +25,10 @@
 #define TVM_RELAY_BACKEND_CONTRIB_CODEGEN_C_CODEGEN_C_H_
 
 #include <tvm/relay/expr.h>
+#include <tvm/relay/function.h>
 #include <tvm/relay/op.h>
+#include <tvm/runtime/container.h>
+
 #include <sstream>
 #include <string>
 #include <utility>
@@ -34,6 +37,13 @@
 namespace tvm {
 namespace relay {
 namespace contrib {
+
+struct Output {
+  std::string name;
+  std::string dtype;
+  int size;
+  bool need_copy;
+};
 
 class CSourceModuleCodegenBase {
  public:
@@ -60,11 +70,9 @@ class CSourceModuleCodegenBase {
    * \return An external symbol.
    */
   std::string GetExtSymbol(const Function& func) const {
-    const auto name_node =
-      FunctionGetAttr(func, attr::kExternalSymbol).as<tvm::tir::StringImmNode>();
-    CHECK(name_node != nullptr) << "Fail to retrieve external symbol.";
-    std::string ext_symbol = name_node->value;
-    return ext_symbol;
+    const auto name_node = func->GetAttr<String>(tvm::attr::kGlobalSymbol);
+    CHECK(name_node.defined()) << "Fail to retrieve external symbol.";
+    return std::string(name_node.value());
   }
 };
 
@@ -98,7 +106,7 @@ class CodegenCBase {
    * \brief Gerenate C code for the external function.
    *
    * \param func_name The name of the external function.
-   * \param arg_cnt The expected number of arguments.
+   * \param args arguments to the external function.
    *
    * \code
    *
@@ -116,82 +124,55 @@ class CodegenCBase {
    *
    * \endcode
    */
-  void GenerateBackendCFunc(const std::string& func_name, int arg_cnt) {
+  void GenerateBackendCFunc(const std::string& func_name, const Array<Var>& args,
+                            const std::vector<Output>& outs) {
     // Print signature
     code_stream_ << "\n";
     code_stream_ << "extern \"C\" int " << func_name << "_wrapper_(";
-    for (int i = 0; i < arg_cnt - 1; i++) {
+    for (size_t i = 0; i < args.size(); i++) {
       code_stream_ << "DLTensor* arg" << i << ",\n";
       code_stream_ << "\t";
     }
-    if (arg_cnt > 0) {
-      code_stream_ << "DLTensor* arg" << arg_cnt - 1 << ") {\n";
+    for (size_t i = 0; i < outs.size() - 1; i++) {
+      code_stream_ << "DLTensor* out" << i << ",\n";
+      code_stream_ << "\t";
     }
+    code_stream_ << "DLTensor* out" << outs.size() - 1 << ") {\n";
 
     EnterScope();
 
     // Generate the internal call.
     PrintIndents();
     code_stream_ << func_name << "_(";
-    for (int i = 0; i < arg_cnt - 1; i++) {
-      code_stream_ << "static_cast<float*>(arg" << i << "->data),\n";
+    for (size_t i = 0; i < args.size(); i++) {
+      const auto& dtype_str = GetDtypeString(args[i]);
+      code_stream_ << "static_cast<" << dtype_str << "*>(arg" << i << "->data),\n";
       PrintIndents();
     }
-    if (arg_cnt > 0) {
-      code_stream_ << "static_cast<float*>(arg" << arg_cnt - 1 << "->data)";
+    for (size_t i = 0; i < outs.size() - 1; i++) {
+      code_stream_ << "static_cast<" << outs[i].dtype << "*>(out" << i << "->data),\n";
+      PrintIndents();
     }
-    code_stream_ << ");\n";
+    code_stream_ << "static_cast<" << outs.back().dtype << "*>(out" << outs.size() - 1
+                 << "->data));\n";
     PrintIndents();
     code_stream_ << "return 0;\n";
     ExitScope();
     code_stream_ << "}\n\n";
 
     // Generate the macro
-    code_stream_ << "TVM_DLL_EXPORT_TYPED_FUNC(" << func_name << ", "
-                 << func_name << "_wrapper_);\n\n";
+    code_stream_ << "TVM_DLL_EXPORT_TYPED_FUNC(" << func_name << ", " << func_name
+                 << "_wrapper_);\n\n";
   }
 
   /*!
    * \brief Emit the code for external runtime.
    *
+   * \param out The outputs.
+   *
    * \return The code string.
    */
-  virtual std::string JIT() = 0;
-
-  /*!
-   * \brief Extract the shape from a Relay tensor type.
-   *
-   * \param type The provided type.
-   *
-   * \return The extracted shape in a list.
-   */
-  std::vector<int> GetShape(const Type& type) const {
-    const auto* ttype = type.as<TensorTypeNode>();
-    CHECK(ttype) << "Expect TensorTypeNode";
-    std::vector<int> shape;
-    for (size_t i = 0; i < ttype->shape.size(); ++i) {
-      auto* val = ttype->shape[i].as<IntImmNode>();
-      CHECK(val);
-      shape.push_back(val->value);
-    }
-    return shape;
-  }
-
-  /*!
-   * \brief Check if a call has the provided name.
-   *
-   * \param call A Relay call node.
-   * \param op_name The name of the expected call.
-   *
-   * \return true if the call's name is equivalent to the given name. Otherwise,
-   * false.
-   */
-  bool IsOp(const CallNode* call, std::string op_name) const {
-    const auto* op_node = call->op.as<OpNode>();
-    CHECK(op_node) << "Expects a single op.";
-    Op op = GetRef<Op>(op_node);
-    return op == Op::Get(op_name);
-  }
+  virtual std::string JIT(const std::vector<Output>& out) = 0;
 
   /*!
    * \brief A common interface that is used by various external runtime to
@@ -207,17 +188,21 @@ class CodegenCBase {
    *
    * \return The emitted code string.
    */
-  std::string JitImpl(std::string ext_func_id, std::vector<std::string> args,
-                      std::vector<std::string> buf_decl, std::vector<std::string> body,
-                      std::vector<std::pair<std::string, int>> out) {
+  std::string JitImpl(const std::string& ext_func_id, const Array<Var>& args,
+                      const std::vector<std::string>& buf_decl,
+                      const std::vector<std::string>& body, const std::vector<Output>& outs) {
     // Create the signature. For example, it could be:
-    // extern "C" void dnnl_0_(float* input0, float* input1, float* out, int M, int N) {}
+    // extern "C" void dnnl_0_(float* in0, float* in1, float* out0, float* out1) {}
     code_stream_ << "extern \"C\" void " << ext_func_id << "_(";
 
     for (const auto& arg : args) {
-      code_stream_ << "float* " << arg << ", ";
+      const auto& dtype_str = GetDtypeString(arg);
+      code_stream_ << dtype_str << "* " << arg->name_hint() << ", ";
     }
-    code_stream_ << "float* out) {\n";
+    for (size_t i = 0; i < outs.size() - 1; ++i) {
+      code_stream_ << outs[i].dtype << "* out" << i << ", ";
+    }
+    code_stream_ << outs.back().dtype << "* out" << outs.size() - 1 << ") {\n";
     this->EnterScope();
 
     // Function body
@@ -232,9 +217,14 @@ class CodegenCBase {
     }
 
     // Copy output
-    CHECK_EQ(out.size(), 1U) << "Internal error: only single output is support.";
-    this->PrintIndents();
-    code_stream_ << "std::memcpy(out, " << out[0].first << ", 4 * " << out[0].second << ");\n";
+    for (size_t i = 0; i < outs.size(); ++i) {
+      if (!outs[i].need_copy) {
+        continue;
+      }
+      this->PrintIndents();
+      code_stream_ << "std::memcpy(out" << i << ", " << outs[i].name << ", 4 * " << outs[i].size
+                   << ");\n";
+    }
 
     // Free buffers
     for (size_t i = 0; i < buf_decl.size(); i++) {
@@ -246,8 +236,43 @@ class CodegenCBase {
     code_stream_ << "}\n";
 
     // Create the wrapper to call the ext_func
-    this->GenerateBackendCFunc(ext_func_id, args.size() + 1 /* output */);
+    this->GenerateBackendCFunc(ext_func_id, args, outs);
     return code_stream_.str();
+  }
+
+  /*!
+   * \brief Returns dtype string
+   *
+   * \param var Var to get the dtype of
+   *
+   * \return The dtype string.
+   */
+  std::string GetDtypeString(const Var& var) {
+    auto ttype = var->checked_type().as<TensorTypeNode>();
+    CHECK(ttype) << "Expect TensorTypeNode";
+    return GetDtypeString(ttype);
+  }
+
+  /*!
+   * \brief Returns dtype string
+   *
+   * \param ttype TensorTypeNode* to get the dtype of
+   *
+   * \return The dtype string.
+   */
+  std::string GetDtypeString(const TensorTypeNode* ttype) {
+    std::string dtype;
+    if (runtime::TypeMatch(ttype->dtype, kDLFloat, 32)) {
+      dtype = "float";
+    } else if (runtime::TypeMatch(ttype->dtype, kDLInt, 32)) {
+      dtype = "int";
+    } else if (runtime::TypeMatch(ttype->dtype, kDLInt, 64)) {
+      dtype = "int64_t";
+    } else {
+      LOG(FATAL) << "Unsupported dtype " << ttype->dtype;
+    }
+
+    return dtype;
   }
 
   /*! \brief The external function source code stream. */

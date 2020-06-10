@@ -22,26 +22,29 @@
  * \brief A compiler from relay::Module to the VM byte code.
  */
 
-#include <tvm/te/operation.h>
+#include "compiler.h"
+
+#include <tvm/driver/driver_api.h>
 #include <tvm/ir/error.h>
+#include <tvm/relay/attrs/memory.h>
 #include <tvm/relay/expr_functor.h>
 #include <tvm/relay/interpreter.h>
 #include <tvm/relay/qnn/transform.h>
-#include <tvm/support/logging.h>
 #include <tvm/relay/transform.h>
 #include <tvm/runtime/vm.h>
-#include <tvm/relay/attrs/memory.h>
-#include <tvm/driver/driver_api.h>
+#include <tvm/support/logging.h>
+#include <tvm/te/operation.h>
 
 #include <iostream>
 #include <memory>
 #include <string>
 #include <tuple>
 #include <vector>
-#include "../utils.h"
+
 #include "../../backend/compile_engine.h"
-#include "../../pass/pass_util.h"
 #include "../../op/op_common.h"
+#include "../../transforms/pass_util.h"
+#include "../utils.h"
 #include "compiler.h"
 
 namespace tvm {
@@ -51,12 +54,23 @@ namespace transform {
 
 Pass LambdaLift();
 Pass InlinePrimitives();
-Pass RemoveUnusedFunctions(Array<tvm::PrimExpr> entry_functions);
 
 Pass ManifestAlloc(Target target_host) {
   auto f = tvm::runtime::Registry::Get("relay.transform.ManifestAlloc");
-  CHECK(f != nullptr) << "could not load memory allocation pass";
+  CHECK(f != nullptr) << "unable to load allocation manifestation pass";
   return (*f)(target_host);
+}
+
+Pass MemoryPlan() {
+  auto f = tvm::runtime::Registry::Get("relay.transform.MemoryPlan");
+  CHECK(f != nullptr) << "unable to load the memory planning pass";
+  return (*f)();
+}
+
+Pass LiftConstants() {
+  auto f = tvm::runtime::Registry::Get("relay.transform.LiftConstants");
+  CHECK(f != nullptr) << "unable to load the constant lifting pass";
+  return (*f)();
 }
 
 }  // namespace transform
@@ -94,8 +108,7 @@ struct AccessField : MatchValue {
   // Runtime register num after compiling the access field path
   RegName reg{-1};
 
-  AccessField(MatchValuePtr parent, size_t index)
-  : parent(parent), index(index) {}
+  AccessField(MatchValuePtr parent, size_t index) : parent(parent), index(index) {}
 
   ~AccessField() {}
 };
@@ -116,8 +129,7 @@ struct VarBinding : ConditionNode {
   Var var;
   MatchValuePtr val;
 
-  VarBinding(Var var, MatchValuePtr val)
-          : var(var), val(val) {}
+  VarBinding(Var var, MatchValuePtr val) : var(var), val(val) {}
 
   ~VarBinding() {}
 };
@@ -132,9 +144,7 @@ struct TagCompare : ConditionNode {
   /*! \brief The expected tag */
   int target_tag;
 
-  TagCompare(MatchValuePtr obj, size_t target)
-          : obj(obj), target_tag(target) {
-  }
+  TagCompare(MatchValuePtr obj, size_t target) : obj(obj), target_tag(target) {}
 
   ~TagCompare() {}
 };
@@ -144,10 +154,8 @@ using TreeLeafNode = relay::TreeLeafNode<ConditionObjectPtr>;
 using TreeLeafFatalNode = relay::TreeLeafFatalNode<ConditionObjectPtr>;
 using TreeBranchNode = relay::TreeBranchNode<ConditionObjectPtr>;
 
-TreeObjectPtr BuildDecisionTreeFromPattern(MatchValuePtr data,
-                                         Pattern pattern,
-                                         TreeObjectPtr then_branch,
-                                         TreeObjectPtr else_branch) {
+TreeObjectPtr BuildDecisionTreeFromPattern(MatchValuePtr data, Pattern pattern,
+                                           TreeObjectPtr then_branch, TreeObjectPtr else_branch) {
   if (pattern.as<PatternWildcardNode>()) {
     // We ignore wildcard binding since it's not producing new vars
     return then_branch;
@@ -177,11 +185,10 @@ TreeObjectPtr BuildDecisionTreeFromPattern(MatchValuePtr data,
   }
 }
 
-TreeObjectPtr BuildDecisionTreeFromClause(MatchValuePtr data,
-                                        Clause clause,
-                                        TreeObjectPtr else_branch) {
-  return BuildDecisionTreeFromPattern(data, clause->lhs,
-                                      TreeLeafNode::Make(clause->rhs), else_branch);
+TreeObjectPtr BuildDecisionTreeFromClause(MatchValuePtr data, Clause clause,
+                                          TreeObjectPtr else_branch) {
+  return BuildDecisionTreeFromPattern(data, clause->lhs, TreeLeafNode::Make(clause->rhs),
+                                      else_branch);
 }
 
 TreeObjectPtr BuildDecisionTreeFromClauses(MatchValuePtr data, tvm::Array<Clause> clauses) {
@@ -194,35 +201,25 @@ TreeObjectPtr BuildDecisionTreeFromClauses(MatchValuePtr data, tvm::Array<Clause
   return else_branch;
 }
 
-std::vector<int64_t> ToAllocTensorShape64(NDArray shape) {
+std::vector<int64_t> ToAllocTensorShape(NDArray shape) {
   std::vector<int64_t> raw_shape;
-  DLTensor tensor = shape.ToDLPack()->dl_tensor;
-  CHECK_EQ(tensor.ndim, 1u);
-  CHECK_EQ(tensor.dtype.code, 0U) << "found " << tensor.dtype.code;
+  CHECK_EQ(shape->ndim, 1u);
+  CHECK_EQ(shape->dtype.code, 0U) << "The dtype of constant shape must be int32 or int64, but got "
+                                  << DLDataType2String(shape->dtype);
+  CHECK(shape->dtype.bits == 64 || shape->dtype.bits == 32)
+      << "The dtype of constant shape must be int32 or int64, but got"
+      << DLDataType2String(shape->dtype);
 
-  // TODO(@jroesch): we really need to standaridize the bit width of
-  // all of the shape manipulating code.
-  CHECK_EQ(tensor.dtype.bits, 64) << "found " << tensor.dtype.bits;
-  int64_t* int_ptr = reinterpret_cast<int64_t*>(tensor.data);
-  for (auto i = 0; i < tensor.shape[0]; i++) {
-    raw_shape.push_back(int_ptr[i]);
-  }
-  return raw_shape;
-}
-
-
-std::vector<int64_t> ToAllocTensorShape32(NDArray shape) {
-  std::vector<int64_t> raw_shape;
-  DLTensor tensor = shape.ToDLPack()->dl_tensor;
-  CHECK_EQ(tensor.ndim, 1u);
-  CHECK_EQ(tensor.dtype.code, 0U) << "found " << tensor.dtype.code;
-
-  // TODO(@jroesch): we really need to standaridize the bit width of
-  // all of the shape manipulating code.
-  CHECK_LE(tensor.dtype.bits, 32) << "found " << tensor.dtype.bits;
-  int32_t* int_ptr = reinterpret_cast<int32_t*>(tensor.data);
-  for (auto i = 0; i < tensor.shape[0]; i++) {
-    raw_shape.push_back(static_cast<int64_t>(int_ptr[i]));
+  if (shape->dtype.bits == 64) {
+    int64_t* int_ptr = reinterpret_cast<int64_t*>(shape->data);
+    for (auto i = 0; i < shape->shape[0]; i++) {
+      raw_shape.push_back(int_ptr[i]);
+    }
+  } else {  // int32
+    int32_t* int_ptr = reinterpret_cast<int32_t*>(shape->data);
+    for (auto i = 0; i < shape->shape[0]; i++) {
+      raw_shape.push_back(static_cast<int64_t>(int_ptr[i]));
+    }
   }
   return raw_shape;
 }
@@ -297,6 +294,15 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
   }
 
   void VisitExpr_(const ConstantNode* const_node) {
+    // Check the shape is valid
+    NDArray data = const_node->data;
+    const DLTensor* tensor = data.operator->();
+    if (tensor->ndim > 0) {
+      int64_t* shapes = reinterpret_cast<int64_t*>(tensor->shape);
+      for (auto i = 0; i < tensor->ndim; i++) {
+        CHECK_GT(shapes[i], 0U);
+      }
+    }
     size_t konst_idx = context_->constants.size();
     context_->constants.push_back(const_node->data);
     Emit(Instruction::LoadConst(konst_idx, NewRegister()));
@@ -319,11 +325,7 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     }
 
     // TODO(@jroesch): use correct tag
-    Emit(Instruction::AllocADT(
-      0,
-      tuple->fields.size(),
-      fields_registers,
-      NewRegister()));
+    Emit(Instruction::AllocADT(0, tuple->fields.size(), fields_registers, NewRegister()));
   }
 
   void VisitExpr_(const MatchNode* match_node) {
@@ -367,7 +369,9 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     this->Emit(Instruction::If(test_register, target_register, 0, 0));
     this->VisitExpr(if_node->true_branch);
 
-    size_t true_register = last_register_;
+    // It saves the result of If-Else expression.
+    auto merge_register = NewRegister();
+    Emit(Instruction::Move(last_register_, merge_register));
     Emit(Instruction::Goto(0));
 
     // Finally store how many instructions there are in the
@@ -379,7 +383,7 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     size_t false_register = last_register_;
 
     // In else-branch, override the then-branch register
-    Emit(Instruction::Move(false_register, true_register));
+    Emit(Instruction::Move(false_register, merge_register));
     // Compute the total number of instructions
     // after generating false.
     auto after_false = this->instructions_.size();
@@ -398,20 +402,23 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     // Patch the Goto.
     this->instructions_[after_true - 1].pc_offset = (after_false - after_true) + 1;
 
-    this->last_register_ = true_register;
+    this->last_register_ = merge_register;
   }
 
   void EmitShapeFunc(Function func, Array<Expr> inputs, Array<Expr> outputs) {
     // Lower shape function
-    auto key = CCacheKeyNode::make(func, target_host_);
+    CCacheKey key(func, target_host_);
     auto cfunc = engine_->LowerShapeFunc(key);
     int op_index = -1;
-    if (context_->seen_funcs.count(cfunc->funcs[0]) == 0) {
+    // pick the only function inside the context
+    CHECK_EQ(cfunc->funcs->functions.size(), 1);
+    auto pfunc = Downcast<tir::PrimFunc>((*cfunc->funcs->functions.begin()).second);
+    if (context_->seen_funcs.count(pfunc) == 0) {
       op_index = context_->cached_funcs.size();
       context_->cached_funcs.push_back(cfunc);
-      context_->seen_funcs[cfunc->funcs[0]] = op_index;
+      context_->seen_funcs[pfunc] = op_index;
     } else {
-      op_index = context_->seen_funcs[cfunc->funcs[0]];
+      op_index = context_->seen_funcs[pfunc];
     }
 
     // Prepare input and output registers
@@ -419,58 +426,52 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     for (auto input : inputs) {
       auto reg = var_register_map_.find(Downcast<Var>(input));
       CHECK(reg != var_register_map_.end())
-        << "internal error: all variables should be in the register mapping";
+          << "internal error: all variables should be in the register mapping";
       argument_registers.push_back(reg->second);
     }
 
     for (auto output : outputs) {
       auto reg = var_register_map_.find(Downcast<Var>(output));
       CHECK(reg != var_register_map_.end())
-        << "internal error: all variables should be in the register mapping";
+          << "internal error: all variables should be in the register mapping";
       argument_registers.push_back(reg->second);
     }
 
-    Emit(Instruction::InvokePacked(op_index,
-      argument_registers.size(),
-      outputs.size(),
-      argument_registers));
+    Emit(Instruction::InvokePacked(op_index, argument_registers.size(), outputs.size(),
+                                   argument_registers));
   }
 
-  void EmitInvokeTVMOp(const Function& func,
-                       const Expr& inputs,
-                       const Expr& outputs) {
+  void EmitInvokeTVMOp(const Function& func, const Expr& inputs, const Expr& outputs) {
     std::vector<Index> argument_registers;
 
-    CHECK(func->IsPrimitive())
-      << "internal error: invoke_tvm_op requires the first argument to be a relay::Function";
+    CHECK(func->GetAttr<Integer>(attr::kPrimitive, 0) != 0)
+        << "internal error: invoke_tvm_op requires the first argument to be a relay::Function";
 
     auto input_tuple = inputs.as<TupleNode>();
-    CHECK(input_tuple)
-      << "internal error: invoke_tvm_op inputs must be a tuple,"
-      << "please file a bug in the memory manifestation pass";
+    CHECK(input_tuple) << "internal error: invoke_tvm_op inputs must be a tuple,"
+                       << "please file a bug in the memory manifestation pass";
 
     auto output_tuple = outputs.as<TupleNode>();
-    CHECK(output_tuple)
-      << "internal error: invoke_tvm_op outputs must be a tuple,"
-      << "please file a bug in the memory manifestation pass";
+    CHECK(output_tuple) << "internal error: invoke_tvm_op outputs must be a tuple,"
+                        << "please file a bug in the memory manifestation pass";
 
     for (auto input : input_tuple->fields) {
       auto reg = var_register_map_.find(Downcast<Var>(input));
       CHECK(reg != var_register_map_.end())
-        << "internal error: all variables should be in the register mapping";
+          << "internal error: all variables should be in the register mapping";
       argument_registers.push_back(reg->second);
     }
 
     for (auto output : output_tuple->fields) {
       auto reg = var_register_map_.find(Downcast<Var>(output));
       CHECK(reg != var_register_map_.end())
-        << "internal error: all variables should be in the register mapping";
+          << "internal error: all variables should be in the register mapping";
       argument_registers.push_back(reg->second);
     }
 
     Target target;
 
-    if (!func->UseDefaultCompiler()) {
+    if (func->GetAttr<String>(attr::kCompiler).defined()) {
       target = tvm::target::ext_dev();
     } else {
       // Next generate the invoke instruction.
@@ -484,29 +485,28 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
       }
     }
 
-    auto key = CCacheKeyNode::make(func, target);
+    CCacheKey key(func, target);
     auto cfunc = engine_->Lower(key);
 
     auto op_index = -1;
-    if (!func->UseDefaultCompiler()) {
+    if (func->GetAttr<String>(attr::kCompiler).defined()) {
       op_index = context_->cached_funcs.size();
       context_->cached_funcs.push_back(cfunc);
     } else {
       // TODO(jroesch): support lowered funcs for multiple targets
-      CHECK_EQ(cfunc->funcs.size(), 1);
-      if (context_->seen_funcs.find(cfunc->funcs[0]) == context_->seen_funcs.end()) {
+      CHECK_EQ(cfunc->funcs->functions.size(), 1);
+      auto pfunc = Downcast<tir::PrimFunc>((*cfunc->funcs->functions.begin()).second);
+      if (context_->seen_funcs.find(pfunc) == context_->seen_funcs.end()) {
         op_index = context_->cached_funcs.size();
         context_->cached_funcs.push_back(cfunc);
-        context_->seen_funcs[cfunc->funcs[0]] = op_index;
+        context_->seen_funcs[pfunc] = op_index;
       } else {
-        op_index = context_->seen_funcs[cfunc->funcs[0]];
+        op_index = context_->seen_funcs[pfunc];
       }
     }
 
-    Emit(Instruction::InvokePacked(op_index,
-      argument_registers.size(),
-      output_tuple->fields.size(),
-      argument_registers));
+    Emit(Instruction::InvokePacked(op_index, argument_registers.size(), output_tuple->fields.size(),
+                                   argument_registers));
   }
 
   void VisitExpr_(const CallNode* call_node) {
@@ -517,79 +517,77 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
     // allocation operations.
     if (op.as<OpNode>()) {
       OpMatch<void> matcher;
-      matcher.Match("memory.invoke_tvm_op",
-        [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
-          CHECK_EQ(args.size(), 3);
-          EmitInvokeTVMOp(Downcast<Function>(args[0]), args[1], args[2]);
-      }).Match("memory.alloc_tensor",
-        [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
-          CHECK_EQ(args.size(), 2);
+      matcher
+          .Match("memory.invoke_tvm_op",
+                 [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
+                   CHECK_EQ(args.size(), 3);
+                   EmitInvokeTVMOp(Downcast<Function>(args[0]), args[1], args[2]);
+                 })
+          .Match("memory.alloc_tensor",
+                 [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
+                   CHECK_EQ(args.size(), 3);
 
-          // Get the attributes.
-          auto alloc_attrs = attrs.as<AllocTensorAttrs>();
-          CHECK(alloc_attrs != nullptr)
-              << "must be the alloc tensor attrs";
-          auto dtype = alloc_attrs->dtype;
+                   // Get the attributes.
+                   auto alloc_attrs = attrs.as<AllocTensorAttrs>();
+                   CHECK(alloc_attrs != nullptr) << "must be the alloc tensor attrs";
+                   auto dtype = alloc_attrs->dtype;
 
-          // The storage will be passed dynamically.
-          this->VisitExpr(args[0]);
-          auto storage_register = last_register_;
+                   // The storage will be passed dynamically.
+                   this->VisitExpr(args[0]);
+                   auto storage_register = last_register_;
 
-          // If the shape is constant then we will emit a static tensor allocation instruction.
-          auto const_shape = args[1].as<ConstantNode>();
+                   // The storage will be passed dynamically.
+                   this->VisitExpr(args[1]);
+                   auto offset_register = last_register_;
 
-          if (const_shape) {
-            NDArray shape = const_shape->data;
-            std::vector<int64_t> raw_shape;
-            DLTensor tensor = shape.ToDLPack()->dl_tensor;
-            // TODO(@jroesch): we need to get an RFC done to standarize this
-            if (tensor.dtype.bits == 64) {
-              raw_shape = ToAllocTensorShape64(shape);
-            } else if (tensor.dtype.bits == 32) {
-              raw_shape = ToAllocTensorShape32(shape);
-            } else {
-              LOG(FATAL) << "unsupported bitwidth: " << tensor.dtype.bits;
-            }
+                   // If the shape is constant then we will emit a static tensor allocation
+                   // instruction.
+                   auto const_shape = args[2].as<ConstantNode>();
 
-            // Add context field.
-            Emit(Instruction::AllocTensor(storage_register, raw_shape, dtype, NewRegister()));
-          } else {
-            this->VisitExpr(args[1]);
-            auto shape_register = last_register_;
-            Emit(Instruction::AllocTensorReg(
-              storage_register,
-              shape_register,
-              dtype,
-              NewRegister()));
-          }
-      }).Match("memory.alloc_storage",
-        [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
-          CHECK_EQ(args.size(), 2);
-          // Compute the size of the allocation.
-          this->VisitExpr(args[0]);
-          auto size_register = last_register_;
+                   if (const_shape) {
+                     NDArray shape = const_shape->data;
+                     // TODO(@jroesch): we need to get an RFC done to standarize shape dtype
+                     std::vector<int64_t> raw_shape = ToAllocTensorShape(shape);
+                     // Add context field.
+                     Emit(Instruction::AllocTensor(storage_register, offset_register, raw_shape,
+                                                   dtype, NewRegister()));
+                   } else {
+                     this->VisitExpr(args[2]);
+                     auto shape_register = last_register_;
+                     Emit(Instruction::AllocTensorReg(storage_register, offset_register,
+                                                      shape_register, dtype, NewRegister()));
+                   }
+                 })
+          .Match("memory.alloc_storage",
+                 [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
+                   CHECK_EQ(args.size(), 2);
+                   // Compute the size of the allocation.
+                   this->VisitExpr(args[0]);
+                   auto size_register = last_register_;
 
-          this->VisitExpr(args[1]);
-          auto alignment_register = last_register_;
+                   this->VisitExpr(args[1]);
+                   auto alignment_register = last_register_;
 
-          // Get the dtype hint from the attributes.
-          auto alloc_attrs = attrs.as<AllocTensorAttrs>();
-          CHECK(alloc_attrs != nullptr)
-              << "must be the alloc tensor attrs";
-          auto dtype = alloc_attrs->dtype;
+                   // Get the dtype hint from the attributes.
+                   auto alloc_attrs = attrs.as<AllocStorageAttrs>();
+                   CHECK(alloc_attrs != nullptr) << "must be the alloc tensor attrs";
+                   auto dtype = alloc_attrs->dtype;
 
-          Emit(Instruction::AllocStorage(size_register, alignment_register, dtype, NewRegister()));
-      }).Match("memory.shape_func",
-        [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
-          CHECK_EQ(args.size(), 3);
-          auto shape_func = Downcast<Function>(args[0]);
-          auto inputs = Downcast<Tuple>(args[1]);
-          auto outputs = Downcast<Tuple>(args[2]);
-          EmitShapeFunc(shape_func, inputs->fields, outputs->fields);
-      }).Match("memory.kill",
-        [](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
-          LOG(FATAL) << "memory.kill is not yet supported";
-      });
+                   Emit(Instruction::AllocStorage(size_register, alignment_register, dtype,
+                                                  NewRegister()));
+                 })
+          .Match("memory.shape_func",
+                 [this](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
+                   CHECK_EQ(args.size(), 3);
+                   auto shape_func = Downcast<Function>(args[0]);
+                   auto inputs = Downcast<Tuple>(args[1]);
+                   auto outputs = Downcast<Tuple>(args[2]);
+                   EmitShapeFunc(shape_func, inputs->fields, outputs->fields);
+                 })
+          .Match("memory.kill",
+                 [](const Array<Expr>& args, const Attrs& attrs, const Array<Type>& type_arg) {
+                   LOG(FATAL) << "memory.kill is not yet supported";
+                 });
       matcher(GetRef<Call>(call_node));
       return;
     }
@@ -612,13 +610,12 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
       auto it = context_->global_map.find(global);
       CHECK(it != context_->global_map.end());
       DLOG(INFO) << "VisitExpr_: generating invoke for " << global->name_hint
-                      << " with func_index=" << it->second;
+                 << " with func_index=" << it->second;
 
       // TODO(tvm-team):
       // Think about mixed call into global that is not a relay::Function
       // perhaps establish as an invariance(all functions in mod must be relay::Function)
       auto func = Downcast<Function>(context_->module->Lookup(global));
-
 
       if (IsClosure(func)) {
         auto arity = func->params.size();
@@ -649,7 +646,7 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
   }
 
   void VisitExpr_(const FunctionNode* func_node) {
-    if (!func_node->IsPrimitive()) {
+    if (!func_node->HasNonzeroAttr(attr::kPrimitive)) {
       LOG(FATAL) << "local functions should have been removed by lambda lifting:" << std::endl
                  << "Program: " << AsText(GetRef<Function>(func_node), false) << std::endl
                  << "AST: " << GetRef<Function>(func_node);
@@ -729,13 +726,13 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
 
  protected:
   /*! \brief Store the expression a variable points to. */
-  std::unordered_map<Var, Expr, ObjectHash, ObjectEqual> expr_map_;
+  std::unordered_map<Var, Expr, ObjectPtrHash, ObjectPtrEqual> expr_map_;
   /*! \brief Instructions in the VMFunction. */
   std::vector<Instruction> instructions_;
   /*! \brief Parameter names of the function. */
   std::vector<std::string> params_;
   /*! \brief Map from var to register number. */
-  std::unordered_map<Var, RegName, ObjectHash, ObjectEqual> var_register_map_;
+  std::unordered_map<Var, RegName, ObjectPtrHash, ObjectPtrEqual> var_register_map_;
   /*! \brief Last used register number. */
   size_t last_register_;
   /*! \brief Total number of virtual registers allocated. */
@@ -750,9 +747,7 @@ class VMFunctionCompiler : ExprFunctor<void(const Expr& expr)> {
   Target target_host_;
 };
 
-
-PackedFunc VMCompiler::GetFunction(const std::string& name,
-                                   const ObjectPtr<Object>& sptr_to_self) {
+PackedFunc VMCompiler::GetFunction(const std::string& name, const ObjectPtr<Object>& sptr_to_self) {
   if (name == "lower") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
       CHECK_EQ(args.num_args, 3);
@@ -765,21 +760,20 @@ PackedFunc VMCompiler::GetFunction(const std::string& name,
       this->Codegen();
     });
   } else if (name == "get_executable") {
-    return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      *rv = runtime::Module(exec_);
-    });
+    return PackedFunc(
+        [sptr_to_self, this](TVMArgs args, TVMRetValue* rv) { *rv = runtime::Module(exec_); });
   } else if (name == "set_params") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      Map<std::string, Constant> params = args[0];
+      Map<String, Constant> params = args[0];
       for (const auto& kv : params) {
         this->SetParam(kv.first, kv.second->data);
       }
     });
   } else if (name == "get_params") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-      Map<std::string, Constant> ret;
+      Map<String, Constant> ret;
       for (const auto& kv : params_) {
-        ret.Set(kv.first, ConstantNode::make(kv.second));
+        ret.Set(kv.first, Constant(kv.second));
       }
       *rv = ret;
     });
@@ -798,11 +792,8 @@ void VMCompiler::SetParam(const std::string& name, runtime::NDArray data_in) {
   params_[name] = data_in;
 }
 
-void VMCompiler::Lower(IRModule mod,
-                       const TargetsMap& targets,
-                       const tvm::Target& target_host) {
-  CHECK_EQ(targets.size(), 1)
-    << "Currently VM compiler doesn't support heterogeneous compilation";
+void VMCompiler::Lower(IRModule mod, const TargetsMap& targets, const tvm::Target& target_host) {
+  CHECK_EQ(targets.size(), 1) << "Currently VM compiler doesn't support heterogeneous compilation";
   if (params_.size()) {
     BaseFunc base_func = mod->Lookup("main");
     CHECK(base_func->IsInstance<FunctionNode>())
@@ -861,17 +852,51 @@ void VMCompiler::Lower(IRModule mod,
   // update primitive function map
   size_t primitive_index = 0;
   for (const auto& cfunc : context_.cached_funcs) {
-    if (cfunc->target->str() == "ext_dev") {
-      exec_->primitive_map.insert({cfunc->func_name, primitive_index++});
-    } else {
-      exec_->primitive_map.insert({cfunc->funcs[0]->name, primitive_index++});
-    }
+    exec_->primitive_map.insert({cfunc->func_name, primitive_index++});
   }
+}
+
+transform::Sequential MemoryOpt(tvm::Target host_target) {
+  Array<Pass> pass_seqs;
+  // Manifest the allocations.
+  pass_seqs.push_back(transform::ManifestAlloc(host_target));
+
+  // Compute away possibly introduced constant computation.
+  pass_seqs.push_back(transform::FoldConstant());
+
+  // Fuse the shape functions.
+  pass_seqs.push_back(transform::FuseOps());
+
+  // Manifest the allocations needed for the shape functions.
+  pass_seqs.push_back(transform::ManifestAlloc(host_target));
+
+  // Fuse the shape functions.
+  pass_seqs.push_back(transform::FuseOps());
+
+  // Perform memory planning in order to coalesce/reduce allocations.
+  pass_seqs.push_back(transform::MemoryPlan());
+
+  // Compute away constant computation introduced by coalescing allocations.
+  pass_seqs.push_back(transform::FoldConstant());
+
+  // Fuse the shape functions.
+  pass_seqs.push_back(transform::FuseOps());
+
+  // Create allocations for math introduced by dynamic region math.
+  pass_seqs.push_back(transform::ManifestAlloc(host_target));
+
+  // Compute away possibly introduced constant computation.
+  pass_seqs.push_back(transform::FoldConstant());
+
+  // Lift constants to the top-level of the block to simplify VM code generation.
+  pass_seqs.push_back(transform::LiftConstants());
+
+  return transform::Sequential(pass_seqs);
 }
 
 IRModule VMCompiler::OptimizeModule(const IRModule& mod, const TargetsMap& targets) {
   Array<Pass> pass_seqs;
-  Array<tvm::PrimExpr> entry_functions{tvm::PrimExpr{"main"}};
+  Array<runtime::String> entry_functions{"main"};
   pass_seqs.push_back(transform::RemoveUnusedFunctions(entry_functions));
   // Run all dialect legalization passes.
   pass_seqs.push_back(relay::qnn::transform::Legalize());
@@ -883,7 +908,7 @@ IRModule VMCompiler::OptimizeModule(const IRModule& mod, const TargetsMap& targe
 
   // eta expand to support constructors in argument position
   pass_seqs.push_back(transform::EtaExpand(
-    /* expand_constructor */ true, /* expand_global_var */ false));
+      /* expand_constructor */ true, /* expand_global_var */ false));
 
   pass_seqs.push_back(transform::SimplifyInference());
   PackedFunc fskip = PackedFunc([](TVMArgs args, TVMRetValue* rv) {
@@ -922,14 +947,14 @@ IRModule VMCompiler::OptimizeModule(const IRModule& mod, const TargetsMap& targe
   pass_seqs.push_back(transform::LambdaLift());
   pass_seqs.push_back(transform::InlinePrimitives());
 
-  // Manifest the allocations.
-  pass_seqs.push_back(transform::ManifestAlloc(this->target_host_));
-  // Compute away possibly introduced constant computation.
-  pass_seqs.push_back(transform::FoldConstant());
-  // Fuse the shape functions.
-  pass_seqs.push_back(transform::FuseOps());
-  // Manifest the allocations needed for the shape functions.
-  pass_seqs.push_back(transform::ManifestAlloc(this->target_host_));
+  // Inline the functions that are lifted to the module scope. We perform this
+  // pass after all other optimization passes but before the memory allocation
+  // pass. This is because memory allocation pass will insert `invoke_tvm_op`
+  // and we use these ops to invoke the symbols in the module generated by
+  // external codegen.
+  pass_seqs.push_back(transform::Inline());
+
+  pass_seqs.push_back(MemoryOpt(this->target_host_));
 
   transform::Sequential seq(pass_seqs);
   transform::PassContext pass_ctx = PassContext::Current();
@@ -953,25 +978,29 @@ void VMCompiler::PopulateGlobalMap() {
 }
 
 void VMCompiler::Codegen() {
-  using tir::LoweredFunc;
-
   if (!context_.module.defined()) {
     LOG(WARNING) << "Did you forget to call VMCompiler::Lower?";
     return;
   }
-  auto const &cached_funcs = context_.cached_funcs;
+  auto const& cached_funcs = context_.cached_funcs;
   if (cached_funcs.size() == 0) {
     return;
   }
-  std::unordered_map<std::string, Array<LoweredFunc>> funcs;
+  std::unordered_map<std::string, IRModule> funcs;
+
   for (auto& cfunc : cached_funcs) {
     std::string target_str = cfunc->target->str();
+    // NOTE: because module, is mutable, we need to make an
+    // explicit copy of the IRModule.
+    IRModule mod = cfunc->funcs;
+    mod.CopyOnWrite();
+
     if (target_str == "ext_dev") {
       continue;
     } else if (funcs.count(target_str) == 0) {
-      funcs.emplace(target_str, Array<LoweredFunc>{cfunc->funcs[0]});
+      funcs.emplace(target_str, mod);
     } else {
-      funcs[target_str].push_back(cfunc->funcs[0]);
+      funcs[target_str]->Update(mod);
     }
   }
 
@@ -979,7 +1008,11 @@ void VMCompiler::Codegen() {
   auto ext_mods = compile_engine->LowerExternalFunctions();
   runtime::Module mod;
   if (funcs.size() > 0) {
-    mod = tvm::build(funcs, target_host_, tvm::BuildConfig::Current());
+    Map<String, IRModule> build_funcs;
+    for (const auto& i : funcs) {
+      build_funcs.Set(i.first, i.second);
+    }
+    mod = tvm::build(build_funcs, target_host_);
     CHECK(mod.operator->());
   } else {
     CHECK_EQ(ext_mods.size(), 1U)
@@ -1003,8 +1036,7 @@ runtime::Module CreateVMCompiler() {
   return runtime::Module(exec);
 }
 
-TVM_REGISTER_GLOBAL("relay._vm._VMCompiler")
-.set_body([](TVMArgs args, TVMRetValue* rv) {
+TVM_REGISTER_GLOBAL("relay._vm._VMCompiler").set_body([](TVMArgs args, TVMRetValue* rv) {
   *rv = CreateVMCompiler();
 });
 
